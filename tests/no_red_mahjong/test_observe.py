@@ -1,7 +1,7 @@
 from unittest import TestCase
 import jax
 import jax.numpy as jnp
-from mahjax.no_red_mahjong.env import _observe_dict, _observe_2D
+from mahjax.no_red_mahjong.observation import _observe_dict, _observe_2D
 from mahjax.no_red_mahjong.state import State
 from mahjax.no_red_mahjong.tile import EMPTY_RIVER, River
 from mahjax.no_red_mahjong.meld import Meld, EMPTY_MELD
@@ -258,6 +258,9 @@ class TestObserveDict(TestCase):
         action_history = action_history.at[1, :3].set(
             jnp.array([10, 11, 12], dtype=jnp.int8)
         )
+        action_history = action_history.at[2, :3].set(
+            jnp.array([False, False, True], dtype=jnp.bool_)
+        )
         state = self.state.replace(_action_history=action_history, current_player=jnp.int8(1)) # for player 1
         obs = jitted_observe_dict(state)
         expected_players = np.array([3, 0, 2], dtype=np.int8)
@@ -268,6 +271,10 @@ class TestObserveDict(TestCase):
         np.testing.assert_array_equal(
             np.array(obs["action_history"])[1, :3],
             np.array(action_history)[1, :3],
+        )
+        np.testing.assert_array_equal(
+            np.array(obs["action_history"])[2, :3],
+            np.array(action_history)[2, :3],
         )
 
         state = self.state.replace(_action_history=action_history, current_player=3)
@@ -281,6 +288,10 @@ class TestObserveDict(TestCase):
             np.array(obs["action_history"])[1, :3],
             np.array(action_history)[1, :3],
         )
+        np.testing.assert_array_equal(
+            np.array(obs["action_history"])[2, :3],
+            np.array(action_history)[2, :3],
+        )
 
         state = self.state.replace(_action_history=action_history, current_player=0)
         obs = jitted_observe_dict(state)
@@ -292,4 +303,8 @@ class TestObserveDict(TestCase):
         np.testing.assert_array_equal(
             np.array(obs["action_history"])[1, :3],
             np.array(action_history)[1, :3],
+        )
+        np.testing.assert_array_equal(
+            np.array(obs["action_history"])[2, :3],
+            np.array(action_history)[2, :3],
         )

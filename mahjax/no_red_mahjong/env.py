@@ -27,6 +27,7 @@ from mahjax.no_red_mahjong.shanten import Shanten
 from mahjax.no_red_mahjong.state import DORA_ARRAY, FIRST_DRAW_IDX, State
 from mahjax.no_red_mahjong.tile import River, Tile
 from mahjax.no_red_mahjong.yaku import Yaku
+from mahjax.no_red_mahjong.observation import _observe_dict, _observe_2D
 
 FALSE = jnp.bool_(False)
 TRUE = jnp.bool_(True)
@@ -1598,28 +1599,3 @@ def _dora_array(state: State) -> Array:
         ura_dora_counts, state._ura_dora_indicators
     ).sum(axis=0)
     return jnp.array([dora_counts, ura_dora_counts])
-
-
-@jax.jit
-def hand_counts_to_idx(counts: Array, fill: int = -1, hand_size: int = 14) -> Array:
-    # Check the input in the JIT outer loop, but keep the minimum guard
-    counts = counts.astype(jnp.int32)
-    # Each column of (34,4) is 0,1,2,3, and if (col_index < count) is True, then the tile is selected
-    col = jnp.arange(4)[None, :]  # (1,4)
-    mask = col < counts[:, None]  # (34,4) bool
-
-    # Value table: if selected, the tile index, if not selected, fill
-    tile_ids = jnp.tile(jnp.arange(34, dtype=jnp.int32)[:, None], (1, 4))  # (34,4)
-    vals = jnp.where(mask, tile_ids, fill)  # (34,4) The contents are i or -1
-    vals = vals.reshape(-1)  # (136,)
-
-    # Sort the mask by True(=1) to the front to move the True to the front
-    key = mask.reshape(-1).astype(jnp.int32)  # (136,)
-    # argsort is ascending, so -key moves True to the front
-    order = jnp.argsort(-key, stable=True)
-    sorted_vals = vals[order]
-
-    # Extract the top hand_size (the rest should be fill, but just in case, use where)
-    out = sorted_vals[:hand_size]
-    out = jnp.where(out == fill, fill, out).astype(jnp.int32)
-    return out

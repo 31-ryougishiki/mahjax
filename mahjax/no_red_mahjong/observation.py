@@ -1,7 +1,42 @@
+from typing import Dict
+
+import jax
+import jax.numpy as jnp
+
+from mahjax._src.types import Array
+from mahjax.no_red_mahjong.state import State
+from mahjax.no_red_mahjong.tile import Tile
+from mahjax.no_red_mahjong.action import Action
+from mahjax.no_red_mahjong.meld import Meld
+from mahjax.no_red_mahjong.tile import River
+
+def hand_counts_to_idx(counts: Array, fill: int = -1, hand_size: int = 14) -> Array:
+    # Check the input in the JIT outer loop, but keep the minimum guard
+    counts = counts.astype(jnp.int32)
+    # Each column of (34,4) is 0,1,2,3, and if (col_index < count) is True, then the tile is selected
+    col = jnp.arange(4)[None, :]  # (1,4)
+    mask = col < counts[:, None]  # (34,4) bool
+
+    # Value table: if selected, the tile index, if not selected, fill
+    tile_ids = jnp.tile(jnp.arange(34, dtype=jnp.int32)[:, None], (1, 4))  # (34,4)
+    vals = jnp.where(mask, tile_ids, fill)  # (34,4) The contents are i or -1
+    vals = vals.reshape(-1)  # (136,)
+
+    # Sort the mask by True(=1) to the front to move the True to the front
+    key = mask.reshape(-1).astype(jnp.int32)  # (136,)
+    # argsort is ascending, so -key moves True to the front
+    order = jnp.argsort(-key, stable=True)
+    sorted_vals = vals[order]
+
+    # Extract the top hand_size (the rest should be fill, but just in case, use where)
+    out = sorted_vals[:hand_size]
+    out = jnp.where(out == fill, fill, out).astype(jnp.int32)
+    return out
+    
 def _observe_dict(state: State) -> Dict:
     """
     - hand: (14,) player's hand [0-33], -1 means empty
-    - action history: (2, 200) action history [player, action], player index is relative to the current player in [0, 3], action is in [0, 78] (-1 means no action)
+    - action history: (3, 200) action history [player, action, is_tsumogiri], player index is relative to the current player in [0, 3], action is in [0, 78] (-1 means no action), is_tsumogiri is a boolean flag indicating whether the action is tsumogiri
     - shanten count: (1,) The number of shanten (0-6)
     - furiten: (1,) Whether the player is in furiten [True/False]
     - scores: (4,) The scores of the players ordered from the current player's perspective (c_p, right, across, left)
