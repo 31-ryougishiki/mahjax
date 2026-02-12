@@ -76,9 +76,9 @@ class State(core.State):
     truncated: Array = FALSE
     _rng_key: PRNGKey = jax.random.PRNGKey(0)
     _step_count: Array = jnp.int32(0)
-    # action history (player, action), 70 (discard) + 70 (every pass) + 16 (four players meld 4 times) + 16 (discard for the melds) + 4 (dummy actions) + 20 (buffer)
+    # action history (player, action, is_tsumogiri), 70 (discard) + 70 (every pass) + 16 (four players meld 4 times) + 16 (discard for the melds) + 4 (dummy actions) + 20 (buffer)
     _action_history: Array = jnp.full(
-        (2, 200), -1, dtype=jnp.int8
+        (3, 200), -1, dtype=jnp.int8
     )  # the default value is -1 which means no-action is performed.
     # --- Mahjong specific ---
     # --- Related to the hand ---
