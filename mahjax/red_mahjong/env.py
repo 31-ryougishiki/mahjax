@@ -431,13 +431,30 @@ def _init_for_next_round(
     """
     Initialize the state for the next round.
     """
+    prepared = _prepare_next_round_assets(rng)
+    return _init_for_next_round_from_prepared(state, prepared, game_config)
+
+
+def _prepare_next_round_assets(
+    rng: PRNGKey,
+) -> Tuple[PRNGKey, Array, Array, Array, Array, Array, Array]:
     rng, subkey = jax.random.split(rng)
-    last_player = jnp.int8(-1)
     deck = Tile.from_tile_id_to_tile(jax.random.permutation(rng, jnp.arange(136))).astype(jnp.int8)
     init_hand_with_red = Hand.make_init_hand(deck)
     init_hand = jax.vmap(Hand.to_34)(init_hand_with_red)
     dora_indicators = jnp.array([deck[9], -1, -1, -1, -1], dtype=jnp.int8)
     ura_dora_indicators = jnp.array([deck[8], -1, -1, -1, -1], dtype=jnp.int8)
+    can_ron = v_can_win(init_hand, TILE_RANGE)
+    return subkey, deck, dora_indicators, ura_dora_indicators, init_hand, init_hand_with_red, can_ron
+
+
+def _init_for_next_round_from_prepared(
+    state: State,
+    prepared: Tuple[PRNGKey, Array, Array, Array, Array, Array, Array],
+    game_config: Optional[GameConfig] = None,
+) -> State:
+    last_player = jnp.int8(-1)
+    subkey, deck, dora_indicators, ura_dora_indicators, init_hand, init_hand_with_red, can_ron = prepared
     state = _replace_state(
         state,
         last_player=last_player,
@@ -448,7 +465,6 @@ def _init_for_next_round(
         hand_with_red=init_hand_with_red,
         rng_key=subkey,
     )
-    can_ron = v_can_win(state.players.hand, TILE_RANGE)
     c_p = state.current_player
     new_tile = state.round_state.deck[state.round_state.next_deck_ix]
     new_tile_type = Tile.to_tile_type(new_tile)
@@ -519,8 +535,20 @@ def _dispatch_step_eager(state: State, action: Array, game_config: Optional[Game
     pon_state = _pon(state, action)
     chi_state = _chi(state, action)
     pass_state = _pass(state, game_config)
-    special_next_round_state = _special_next_round(state, game_config)
-    next_round_state = _next_round(state, game_config)
+    _, next_round_rng = jax.random.split(state.round_state.rng_key)
+    prepared_next_round = _prepare_next_round_assets(next_round_rng)
+    special_next_round_state = _special_next_round(
+        state,
+        game_config,
+        next_round_rng=next_round_rng,
+        prepared_next_round=prepared_next_round,
+    )
+    next_round_state = _next_round(
+        state,
+        game_config,
+        next_round_rng=next_round_rng,
+        prepared_next_round=prepared_next_round,
+    )
     fn_idx = ACTION_FUN_MAP[action]
     return jax.lax.switch(
         fn_idx,
@@ -1179,10 +1207,12 @@ def _kan(state: State, action, game_config: Optional[GameConfig] = None):
     is_open_kan = action == Action.OPEN_KAN
     pon = state.players.pon[(c_p, Tile.to_tile_type(tile))]
     is_added_kan = pon != 0  # TODO: Is it correct?
+    open_kan_state = _open_kan(state)
+    selfkan_state = _selfkan(state, action, is_added_kan)
     state = jax.lax.cond(
         is_open_kan,
-        lambda: _open_kan(state),
-        lambda: _selfkan(state, action, is_added_kan),
+        lambda: open_kan_state,
+        lambda: selfkan_state,
     )
     # 暗槓のみ実際の卓と同様に槓ドラが即開示される。嶺上牌はまだ引かない（``_draw_after_kan``）。
     is_closed_kan = (~is_open_kan) & (~is_added_kan)
@@ -1259,10 +1289,12 @@ def _selfkan(state: State, action, is_added_kan):
     - Set the legal action after drawing the rinshan tile
     """
     target = action - Tile.NUM_TILE_TYPE_WITH_RED  # Convert to 0-33
+    added_kan_state = _added_kan(state, target)
+    closed_kan_state = _closed_kan(state, target)
     return jax.lax.cond(
         is_added_kan,
-        lambda: _added_kan(state, target),
-        lambda: _closed_kan(state, target),
+        lambda: added_kan_state,
+        lambda: closed_kan_state,
     )
 
 
@@ -1753,11 +1785,20 @@ def _abortive_draw_normal(state: State) -> State:
     )
 
 
-def _special_next_round(state: State, game_config: Optional[GameConfig] = None) -> State:
-    rng, subkey = jax.random.split(state.round_state.rng_key)
+def _special_next_round(
+    state: State,
+    game_config: Optional[GameConfig] = None,
+    *,
+    next_round_rng: Optional[PRNGKey] = None,
+    prepared_next_round: Optional[Tuple[PRNGKey, Array, Array, Array, Array, Array, Array]] = None,
+) -> State:
+    if next_round_rng is None:
+        _, next_round_rng = jax.random.split(state.round_state.rng_key)
+    if prepared_next_round is None:
+        prepared_next_round = _prepare_next_round_assets(next_round_rng)
     dealer = state.round_state.dealer
     base_next = _make_state(
-        rng_key=subkey,
+        rng_key=next_round_rng,
         current_player=dealer,
         dealer=dealer,
         init_wind=state.round_state.init_wind,
@@ -1769,7 +1810,7 @@ def _special_next_round(state: State, game_config: Optional[GameConfig] = None) 
         score=state.round_state.score,
         order_points=state.round_state.order_points,
     )
-    return _init_for_next_round(subkey, base_next, game_config)
+    return _init_for_next_round_from_prepared(base_next, prepared_next_round, game_config)
 
 
 def _pao(state: State, winner: Array) -> Tuple[Array, Array]:
@@ -1814,7 +1855,13 @@ def _mangan_tsumo(winner: Array, dealer: Array, honba: Array) -> Array:
     )
 
 
-def _next_round(state: State, game_config: Optional[GameConfig] = None) -> State:
+def _next_round(
+    state: State,
+    game_config: Optional[GameConfig] = None,
+    *,
+    next_round_rng: Optional[PRNGKey] = None,
+    prepared_next_round: Optional[Tuple[PRNGKey, Array, Array, Array, Array, Array, Array]] = None,
+) -> State:
     """
     Move to the next round
     - Process the next round
@@ -1824,6 +1871,10 @@ def _next_round(state: State, game_config: Optional[GameConfig] = None) -> State
     - DUMMY sharing: 3 times of rotation (cp to +1 mod 4) after the 4th time, the result is determined
     """
     dc = state.round_state.dummy_count  # int8
+    if next_round_rng is None:
+        _, next_round_rng = jax.random.split(state.round_state.rng_key)
+    if prepared_next_round is None:
+        prepared_next_round = _prepare_next_round_assets(next_round_rng)
 
     # ---- During the DUMMY sharing phase, only rotate ----
     def _rotate_once(s: State):
@@ -1888,11 +1939,9 @@ def _next_round(state: State, game_config: Optional[GameConfig] = None) -> State
             will_dealer_continue, dealer, (dealer + 1) % 4
         )  # if the dealer continues, the dealer is kept, otherwise the dealer is incremented
 
-        rng, subkey = jax.random.split(s.round_state.rng_key)
-
         # ★ Initialize only at this timing
         base_next = _make_state(  # type: ignore
-            rng_key=subkey,
+            rng_key=next_round_rng,
             current_player=next_dealer,  # Start from the dealer
             dealer=next_dealer,
             seat_wind=_calc_wind(next_dealer),
@@ -1901,7 +1950,11 @@ def _next_round(state: State, game_config: Optional[GameConfig] = None) -> State
             kyotaku=s.round_state.kyotaku,
             score=s.round_state.score,
         )
-        next_round_state = _init_for_next_round(subkey, base_next, game_config)
+        next_round_state = _init_for_next_round_from_prepared(
+            base_next,
+            prepared_next_round,
+            game_config,
+        )
 
         terminated_state = _replace_state(
             s,
