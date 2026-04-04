@@ -164,6 +164,8 @@ def main() -> None:
 
     for src in sorted(JA.glob("*.svg")):
         name = src.name
+        if re.fullmatch(r"[1-46-9][mps]r\.svg", name):
+            continue
         if name in {"back.svg", "b.svg"}:
             (EN / name).write_text(src.read_text())
             continue
