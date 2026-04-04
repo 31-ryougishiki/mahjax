@@ -119,14 +119,16 @@ class State(abc.ABC):
             str: SVG string
         """
         if self.env_id in ("mahjong", "red_mahjong", "no_red_mahjong"):
-            from mahjax._src.visualizer import _to_red_env_state
-            from mahjax.red_mahjong.visualization import render_round_svg
+            if self.env_id == "red_mahjong":
+                from mahjax.red_mahjong.visualization import render_round_svg
+            else:
+                from mahjax.no_red_mahjong.visualization import render_round_svg
 
             del color_theme, scale
             if use_english:
                 language = "en"
             return render_round_svg(
-                _to_red_env_state(self),
+                self,
                 show_all_hands=True,
                 language=language,
             )

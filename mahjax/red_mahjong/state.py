@@ -129,6 +129,10 @@ class EnvState:
     terminated: jnp.bool_ = FALSE
     truncated: jnp.bool_ = FALSE
 
+    @property
+    def env_id(self) -> str:
+        return "red_mahjong"
+
 
 State = EnvState
 

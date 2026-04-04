@@ -158,6 +158,15 @@ def _resolve_game_config(game_config: Optional[GameConfig]) -> GameConfig:
     return default_game_config() if game_config is None else game_config
 
 
+def _apply_red_five_config(deck: Array, game_config: Optional[GameConfig] = None) -> Array:
+    config = _resolve_game_config(game_config)
+    return jax.lax.cond(
+        config.use_red_fives,
+        lambda: deck,
+        lambda: Tile.to_tile_type(deck).astype(jnp.int8),
+    )
+
+
 def _live_wall_end_ix(state: State) -> jnp.ndarray:
     """Haitei line: last drawable wall index; ``last_deck_ix`` advances per kan (王牌繰り)."""
     return state.round_state.last_deck_ix.astype(jnp.int32)
@@ -373,6 +382,7 @@ def _init(rng: PRNGKey, game_config: Optional[GameConfig] = None) -> State:
     current_player = jnp.int8(jax.random.randint(rng, (), 0, 4))
     last_player = jnp.int8(-1)
     deck = Tile.from_tile_id_to_tile(jax.random.permutation(rng, jnp.arange(136))).astype(jnp.int8)
+    deck = _apply_red_five_config(deck, game_config)
     init_hand_with_red = Hand.make_init_hand(deck)
     init_hand = jax.vmap(Hand.to_34)(init_hand_with_red)
     dora_indicators = jnp.array([deck[9], -1, -1, -1, -1], dtype=jnp.int8)
@@ -431,15 +441,17 @@ def _init_for_next_round(
     """
     Initialize the state for the next round.
     """
-    prepared = _prepare_next_round_assets(rng)
+    prepared = _prepare_next_round_assets(rng, game_config)
     return _init_for_next_round_from_prepared(state, prepared, game_config)
 
 
 def _prepare_next_round_assets(
     rng: PRNGKey,
+    game_config: Optional[GameConfig] = None,
 ) -> Tuple[PRNGKey, Array, Array, Array, Array, Array, Array]:
     rng, subkey = jax.random.split(rng)
     deck = Tile.from_tile_id_to_tile(jax.random.permutation(rng, jnp.arange(136))).astype(jnp.int8)
+    deck = _apply_red_five_config(deck, game_config)
     init_hand_with_red = Hand.make_init_hand(deck)
     init_hand = jax.vmap(Hand.to_34)(init_hand_with_red)
     dora_indicators = jnp.array([deck[9], -1, -1, -1, -1], dtype=jnp.int8)

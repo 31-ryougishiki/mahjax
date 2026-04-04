@@ -24,15 +24,18 @@ import jax.numpy as jnp
 import numpy as np
 
 from mahjax.no_red_mahjong.action import Action
-from mahjax.no_red_mahjong.env import NoRedMahjong, _dora_array
+from mahjax.no_red_mahjong.env import _dora_array
 from mahjax.no_red_mahjong.state import DORA_ARRAY, FIRST_DRAW_IDX, State
 from mahjax.no_red_mahjong.tile import Tile
 from mahjax.no_red_mahjong.yaku import Yaku
 from mahjax._src.visualizer import _to_red_env_state
 from mahjax.red_mahjong.action import Action as RedAction
 from mahjax.red_mahjong.env import RedMahjong
+from mahjax.red_mahjong.env import _dora_array as _red_dora_array
+from mahjax.red_mahjong.state import GameConfig as RedGameConfig
 from mahjax.red_mahjong.tile import Tile as RedTile
 from mahjax.red_mahjong.visualization import render_round_svg
+from mahjax.red_mahjong.yaku import Yaku as RedYaku
 
 from .agents import Agent, AgentRegistry, ensure_valid_action
 from .utils import tile_label, tile_labels
@@ -109,6 +112,114 @@ YAKU_NAMES_JA = [
     "字一色",
     "緑一色",
     "四暗刻",
+    "四槓子",
+]
+RED_YAKU_NAMES_EN = [
+    "Fully Concealed Hand",
+    "Riichi",
+    "Ippatsu",
+    "Robbing a Kan",
+    "Rinshan Kaihou",
+    "Haitei Raoyue",
+    "Houtei Raoyui",
+    "Pinfu",
+    "All Simples",
+    "Pure Double Chis",
+    "Seat Wind East",
+    "Seat Wind South",
+    "Seat Wind West",
+    "Seat Wind North",
+    "Prevalent Wind East",
+    "Prevalent Wind South",
+    "Prevalent Wind West",
+    "Prevalent Wind North",
+    "White Dragon",
+    "Green Dragon",
+    "Red Dragon",
+    "Double Riichi",
+    "Seven Pairs",
+    "Outside Hand",
+    "Pure Straight",
+    "Mixed Triple Chis",
+    "Triple Pons",
+    "Three Kans",
+    "All Pons",
+    "Three Concealed Pons",
+    "Little Three Dragons",
+    "All Terminals and Honors",
+    "Twice Pure Double Chis",
+    "Terminals in All Sets",
+    "Half Flush",
+    "Full Flush",
+    "Renhou",
+    "Heavenly Hand",
+    "Earthly Hand",
+    "Big Three Dragons",
+    "Four Concealed Pons",
+    "Four Concealed Pons Single Wait",
+    "All Honors",
+    "All Green",
+    "All Terminals",
+    "Nine Gates",
+    "Pure Nine Gates",
+    "Thirteen Orphans",
+    "Thirteen Orphans 13-Wait",
+    "Big Four Winds",
+    "Little Four Winds",
+    "Four Kans",
+]
+RED_YAKU_NAMES_JA = [
+    "門前清自摸和",
+    "立直",
+    "一発",
+    "槍槓",
+    "嶺上開花",
+    "海底摸月",
+    "河底撈魚",
+    "平和",
+    "断么九",
+    "一盃口",
+    "自風 東",
+    "自風 南",
+    "自風 西",
+    "自風 北",
+    "場風 東",
+    "場風 南",
+    "場風 西",
+    "場風 北",
+    "白",
+    "發",
+    "中",
+    "ダブル立直",
+    "七対子",
+    "混全帯么九",
+    "一気通貫",
+    "三色同順",
+    "三色同刻",
+    "三槓子",
+    "対々和",
+    "三暗刻",
+    "小三元",
+    "混老頭",
+    "二盃口",
+    "純全帯么九",
+    "混一色",
+    "清一色",
+    "人和",
+    "天和",
+    "地和",
+    "大三元",
+    "四暗刻",
+    "四暗刻単騎",
+    "字一色",
+    "緑一色",
+    "清老頭",
+    "九蓮宝燈",
+    "純正九蓮宝燈",
+    "国士無双",
+    "国士無双十三面待ち",
+    "大四喜",
+    "小四喜",
     "四槓子",
 ]
 
@@ -229,8 +340,8 @@ class GameSession:
         self,
         *,
         env_id: str,
-        env: NoRedMahjong,
-        state: State,
+        env: Any,
+        state: Any,
         rng: jnp.ndarray,
         agent: Agent,
         human_seat: int,
@@ -242,6 +353,7 @@ class GameSession:
         self.id = uuid.uuid4().hex
         self.env_id = env_id
         self.is_red = env_id == "red_mahjong"
+        self._uses_red_state = hasattr(state, "players") and hasattr(state, "round_state")
         self.env = env
         self.state = jax.device_get(state)
         self.rng = rng
@@ -277,7 +389,7 @@ class GameSession:
         self.step_counter += 1
         description = (
             describe_action_red(action, prev_state)
-            if self.is_red
+            if self._uses_red_state
             else describe_action(action, prev_state)
         )
         event = ActionEvent(
@@ -294,15 +406,9 @@ class GameSession:
         if self._is_terminated_round(next_state) and not self._is_terminated_round(
             prev_state
         ):
-            if self.is_red:
-                summary = RoundSummary(
-                    reason="round_end",
-                    rewards=[int(np.round(r * 100)) for r in np.array(next_state.rewards)],
-                    winners=[],
-                    round_count=int(next_state.round_state.round),
-                    honba=int(next_state.round_state.honba),
-                    kyotaku=int(next_state.round_state.kyotaku),
-                    is_game_end=bool(next_state.terminated),
+            if self._uses_red_state:
+                summary = build_round_summary_red(
+                    prev_state, next_state, event, self.player_names
                 )
             else:
                 summary = build_round_summary(
@@ -348,7 +454,7 @@ class GameSession:
         steps = 0
         while steps < 8 and self._is_terminated_round(self.state):
             mask = self.state.legal_action_mask
-            dummy_action = RedAction.DUMMY if self.is_red else Action.DUMMY
+            dummy_action = RedAction.DUMMY if self._uses_red_state else Action.DUMMY
             if not bool(mask[dummy_action]):
                 break
             self.apply_action(dummy_action, actor="system")
@@ -362,8 +468,8 @@ class GameSession:
             return
         if actor == self.human_seat:
             return
-        ron_action = RedAction.RON if self.is_red else Action.RON
-        tsumo_action = RedAction.TSUMO if self.is_red else Action.TSUMO
+        ron_action = RedAction.RON if self._uses_red_state else Action.RON
+        tsumo_action = RedAction.TSUMO if self._uses_red_state else Action.TSUMO
         if action in (ron_action, tsumo_action):
             self._reveal_hidden_hands = True
 
@@ -402,7 +508,7 @@ class GameSession:
         try:
             self._auto_pass_lock = True
             while self._should_auto_pass_current():
-                pass_action = RedAction.PASS if self.is_red else Action.PASS
+                pass_action = RedAction.PASS if self._uses_red_state else Action.PASS
                 self._apply_action(pass_action, actor="auto_pass_call")
                 if self.state.terminated or self._is_terminated_round(self.state):
                     break
@@ -410,7 +516,7 @@ class GameSession:
             self._auto_pass_lock = False
 
     def _should_auto_pass_current(self) -> bool:
-        if self.is_red:
+        if self._uses_red_state:
             return False
         if (
             not self.auto_pass_calls
@@ -460,7 +566,7 @@ class GameSession:
         return "awaiting_ai"
 
     def to_view(self) -> Dict[str, Any]:
-        if self.is_red:
+        if self._uses_red_state:
             return self._to_view_red()
         state = self.state
         scores = [int(s) * 100 for s in np.array(state._score)]
@@ -608,7 +714,7 @@ class GameSession:
         }
 
     def _is_terminated_round(self, state: Any) -> bool:
-        if self.is_red:
+        if hasattr(state, "round_state"):
             return bool(state.round_state.terminated_round)
         return bool(state._terminated_round)
 
@@ -632,10 +738,15 @@ class GameManager:
         auto_pass_calls: bool = False,
     ) -> GameSession:
         agent = self.registry.get(agent_id)
-        if env_id == "red_mahjong" and agent.agent_id == "rule_based":
-            # no_red rule-based expects no_red state fields, so use red-compatible rule-based.
+        if env_id in ("red_mahjong", "no_red_mahjong") and agent.agent_id == "rule_based":
             agent = self.registry.get("rule_based_red")
-        env = RedMahjong(one_round=one_round) if env_id == "red_mahjong" else NoRedMahjong(one_round=one_round)
+        if env_id == "red_mahjong":
+            env = RedMahjong(one_round=one_round)
+        else:
+            env = RedMahjong(
+                one_round=one_round,
+                game_config=RedGameConfig(use_red_fives=jnp.bool_(False)),
+            )
         rng = jax.random.PRNGKey(seed)
         rng, init_key = jax.random.split(rng)
         state = env.init(init_key)
@@ -1181,6 +1292,52 @@ def build_round_summary(
     )
 
 
+def build_round_summary_red(
+    prev_state: Any,
+    next_state: Any,
+    event: ActionEvent,
+    player_names: List[str],
+) -> RoundSummary:
+    rewards = [int(np.round(r * 100)) for r in np.array(next_state.rewards)]
+    reason = "abortive_draw_normal"
+    winners: List[WinnerSummary] = []
+    if event.action == RedAction.TSUMO:
+        reason = "tsumo"
+        winners.append(
+            summarise_winner_red(
+                prev_state,
+                next_state,
+                player=event.player,
+                player_names=player_names,
+                winning_tile=int(prev_state.round_state.last_draw),
+                from_player=None,
+                is_ron=False,
+            )
+        )
+    elif event.action == RedAction.RON:
+        reason = "ron"
+        winners.append(
+            summarise_winner_red(
+                prev_state,
+                next_state,
+                player=event.player,
+                player_names=player_names,
+                winning_tile=int(prev_state.round_state.target),
+                from_player=int(prev_state.round_state.last_player),
+                is_ron=True,
+            )
+        )
+    return RoundSummary(
+        reason=reason,
+        rewards=rewards,
+        winners=winners,
+        round_count=int(prev_state.round_state.round),
+        honba=int(prev_state.round_state.honba),
+        kyotaku=int(prev_state.round_state.kyotaku),
+        is_game_end=bool(next_state.terminated),
+    )
+
+
 def is_game_end_pending(state: State) -> bool:
     score = np.array(state._score, dtype=np.int32)
     if score.size == 0:
@@ -1293,17 +1450,82 @@ def summarise_winner(
     )
 
 
+def summarise_winner_red(
+    prev_state: Any,
+    next_state: Any,
+    *,
+    player: int,
+    player_names: List[str],
+    winning_tile: int,
+    from_player: Optional[int],
+    is_ron: bool,
+) -> WinnerSummary:
+    hand = jnp.asarray(prev_state.players.hand_with_red[player])
+    melds = jnp.asarray(prev_state.players.melds[player])
+    n_meld = jnp.int32(prev_state.players.meld_counts[player])
+    riichi = bool(np.array(prev_state.players.riichi[player]))
+    flatten = RedYaku.flatten(hand, melds, n_meld)
+    if is_ron and 0 <= winning_tile < RedTile.NUM_TILE_TYPE_WITH_RED:
+        flatten = flatten.at[int(RedTile.to_tile_type(winning_tile))].add(1)
+    dora = _red_dora_array(prev_state)
+    flatten_np = np.array(flatten, dtype=np.int32)
+    dora_np = np.array(dora, dtype=np.int32)
+    visible_dora = int(np.dot(flatten_np, dora_np[0]))
+    ura_dora = int(np.dot(flatten_np, dora_np[1])) if riichi else 0
+    dora_tile_list = resolve_dora_tiles(prev_state.round_state.dora_indicators)
+    ura_dora_tile_list = resolve_dora_tiles(prev_state.round_state.ura_dora_indicators)
+    yaku_mask, fan, fu = RedYaku.judge(hand, jnp.bool_(is_ron), jnp.int32(player), prev_state)
+    yaku_mask_np = np.array(yaku_mask, dtype=bool)
+    fan_val = int(np.array(fan))
+    fu_val = int(np.array(fu))
+    indices = [i for i, flag in enumerate(yaku_mask_np) if flag]
+    yaku_english = [RED_YAKU_NAMES_EN[i] for i in indices]
+    yaku_japanese = [RED_YAKU_NAMES_JA[i] for i in indices]
+    extra_definitions = EXTRA_RON_YAKU if is_ron else EXTRA_TSUMO_YAKU
+    yaku_english.extend(list_extra_yaku(prev_state, player, extra_definitions, use_english=True))
+    yaku_japanese.extend(list_extra_yaku(prev_state, player, extra_definitions, use_english=False))
+    if not is_ron and is_first_turn(prev_state) and int(np.array(prev_state.players.meld_counts).sum()) == 0:
+        if player == int(prev_state.round_state.dealer):
+            yaku_english.append("Heavenly Hand")
+            yaku_japanese.append("天和")
+        else:
+            yaku_english.append("Earthly Hand")
+            yaku_japanese.append("地和")
+    yakuman = 0
+    if fu_val == 0 and fan_val > 0:
+        yakuman = fan_val
+    points_delta = int(np.round(np.array(next_state.rewards[player]) * 100))
+    return WinnerSummary(
+        player=player,
+        name=player_names[player],
+        points_delta=points_delta,
+        fan=fan_val,
+        fu=fu_val,
+        yaku=yaku_english,
+        yaku_japanese=yaku_japanese,
+        dora_count=visible_dora,
+        ura_dora_count=ura_dora,
+        dora_tiles=dora_tile_list,
+        ura_dora_tiles=ura_dora_tile_list,
+        is_riichi=any(name in yaku_english for name in ("Riichi", "Double Riichi")),
+        yakuman=yakuman,
+        winning_tile=winning_tile if winning_tile >= 0 else None,
+        from_player=from_player,
+    )
+
+
 def resolve_dora_tiles(indicators: jnp.ndarray) -> List[int]:
     indices = np.array(indicators, dtype=int)
     tiles: List[int] = []
     for idx in indices:
         if idx >= 0:
-            tiles.append(int(DORA_TILE_LOOKUP[idx]))
+            tile_type = int(RedTile.to_tile_type(idx))
+            tiles.append(int(DORA_TILE_LOOKUP[tile_type]))
     return tiles
 
 
 def list_extra_yaku(
-    state: State,
+    state: Any,
     player: int,
     definitions: List[ExtraYakuDefinition],
     *,
@@ -1311,7 +1533,7 @@ def list_extra_yaku(
 ) -> List[str]:
     names: List[str] = []
     for definition in definitions:
-        value = getattr(state, definition.attr)
+        value = _resolve_state_flag_value(state, definition.attr)
         if isinstance(value, (np.ndarray, jnp.ndarray)):
             array_value = np.array(value)
             if array_value.ndim == 0:
@@ -1327,7 +1549,20 @@ def list_extra_yaku(
     return names
 
 
-def is_first_turn(state: State) -> bool:
+def _resolve_state_flag_value(state: Any, attr: str) -> Any:
+    if hasattr(state, attr):
+        return getattr(state, attr)
+    nested_attr = attr[1:] if attr.startswith("_") else attr
+    if hasattr(state, "players") and hasattr(state.players, nested_attr):
+        return getattr(state.players, nested_attr)
+    if hasattr(state, "round_state") and hasattr(state.round_state, nested_attr):
+        return getattr(state.round_state, nested_attr)
+    raise AttributeError(f"State has no attribute {attr}")
+
+
+def is_first_turn(state: Any) -> bool:
+    if hasattr(state, "round_state"):
+        return bool(int(state.round_state.next_deck_ix) == FIRST_DRAW_IDX)
     return bool(int(state._next_deck_ix) == FIRST_DRAW_IDX)
 
 
