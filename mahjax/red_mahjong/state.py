@@ -36,7 +36,7 @@ TRUE = jnp.bool_(True)
 class GameConfig:
     allow_open_tanyao: jnp.bool_ = TRUE
     allow_kuikae: jnp.bool_ = FALSE
-    use_red_fives: jnp.bool_ = FALSE
+    use_red_fives: jnp.bool_ = TRUE
     allow_double_ron: jnp.bool_ = TRUE
     enable_special_abortive_draw: jnp.bool_ = TRUE
     enable_pao: jnp.bool_ = TRUE
