@@ -2369,5 +2369,3 @@ def _observe_2D(state: State) -> Array:
 
     return obs
 
-
-NoRedMahjong = RedMahjong
