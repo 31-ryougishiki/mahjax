@@ -1,13 +1,4 @@
-# NOTE: This file is copied and modified from Pgx (https://github.com/sotetsuk/pgx).
-# Copyright belongs to the original authors.
-# We keep tracking the updates of original Pgx implementation.
-# We try to minimize the modification to this file. Exceptions includes:
-#   - remove observation from the state class since mahjax accept 2 types of observation: dict and 2D array.
-#   - fix available environments and make functions
-#   - remove unnesesary env implementation since mahjax only support mahjong environment.
-#   - function semantics are emptied for flexibility.
-#
-# Copyright 2023 The Pgx Authors.
+# Copyright 2025 The Mahjax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,19 +25,6 @@ from mahjax._src.types import Array, PRNGKey
 TRUE = jnp.bool_(True)
 FALSE = jnp.bool_(False)
 
-
-# Mahjax environments are versioned like OpenAI Gym or Brax.
-# OpenAI Gym forces user to specify version (e.g., `MountainCar-v0`); while Brax does not (e.g., `ant`)
-# We follow the way of Brax. One can check the environment version by `Env.version`.
-# We do not explicitly include version in EnvId for three reasons:
-# (1) In game domain, performance measure is not the score in environment but
-#     the comparison to other agents (i.e., environment version is less important),
-# (2) we do not provide older versions (as with OpenAI Gym), and
-# (3) it is tedious to remember and write version numbers.
-#
-# Naming convention:
-# Hyphen - is used to represent that there is a different original game source, and
-# Underscore - is used for the other cases.
 EnvId = Literal[
     "no_red_mahjong",
     "red_mahjong",
