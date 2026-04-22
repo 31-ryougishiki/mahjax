@@ -31,7 +31,7 @@ def test_public_state_layout_and_defaults_for_red_env() -> None:
     assert state.legal_action_mask.shape == (Action.NUM_ACTION,)
     assert state.players.melds.shape == (4, 4)
     assert state.players.river.shape == (4, 24)
-    assert state.round_state.action_history.shape == (2, 200)
+    assert state.round_state.action_history.shape == (3, 200)
     assert state.rewards.shape == (4,)
     assert bool(config.allow_double_ron)
     assert bool(config.enable_special_abortive_draw)

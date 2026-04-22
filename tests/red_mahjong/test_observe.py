@@ -75,6 +75,7 @@ def _make_state():
             round=jnp.int8(5),
             honba=jnp.int8(2),
             kyotaku=jnp.int8(4),
+            last_draw=jnp.int8(Tile.RED_FIVE["p"]),
             score=jnp.array([260, 240, 270, 230], dtype=jnp.int32),
             dora_indicators=jnp.array([0, Tile.RED_FIVE["p"], -1, -1, -1], dtype=jnp.int8),
         ),
@@ -97,6 +98,7 @@ def test_observe_dict_returns_relative_view() -> None:
     obs = _observe_dict(state)
 
     np.testing.assert_array_equal(np.array(obs["hand"]), np.array([9] + [-1] * 13, dtype=np.int32))
+    assert obs["last_draw"].item() == Tile.RED_FIVE["p"]
     np.testing.assert_array_equal(
         np.array(obs["scores"]),
         np.array([240, 270, 230, 260], dtype=np.int32),
@@ -108,6 +110,10 @@ def test_observe_dict_returns_relative_view() -> None:
     np.testing.assert_array_equal(
         np.array(obs["action_history"])[1, :3],
         np.array([10, 11, 12], dtype=np.int8),
+    )
+    np.testing.assert_array_equal(
+        np.array(obs["action_history"])[2, :4],
+        np.array([-1, -1, -1, -1], dtype=np.int8),
     )
     np.testing.assert_array_equal(
         np.array(obs["dora_indicators"]),

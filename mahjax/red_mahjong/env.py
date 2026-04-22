@@ -522,17 +522,31 @@ def _is_first_turn(next_deck_ix: Array) -> Array:
     return next_deck_ix >= FIRST_DRAW_IDX - 4
 
 
+def _append_action_history(state: State, action: Array) -> Array:
+    action_i32 = jnp.asarray(action, dtype=jnp.int32)
+    is_tsumogiri = action_i32 == Action.TSUMOGIRI
+    is_discard = ((0 <= action_i32) & (action_i32 < Tile.NUM_TILE_TYPE_WITH_RED)) | is_tsumogiri
+    history_action = jnp.where(is_tsumogiri, state.round_state.last_draw, action_i32)
+    history_action = jnp.where(is_discard, history_action, action_i32).astype(jnp.int8)
+    history_tsumogiri = jnp.where(
+        is_discard,
+        is_tsumogiri.astype(jnp.int8),
+        jnp.int8(-1),
+    )
+
+    action_history = state.round_state.action_history.at[0, state.step_count].set(
+        state.current_player
+    )
+    action_history = action_history.at[1, state.step_count].set(history_action)
+    return action_history.at[2, state.step_count].set(history_tsumogiri)
+
+
 def _step(state: State, action: Array, game_config: Optional[GameConfig] = None) -> State:
     """
     Branch the process according to the action
     The type of action is referred to mahjong/_action.py
     """
-    action_i8 = jnp.int8(action)
-    # add action history
-    action_history = state.round_state.action_history.at[0, state.step_count].set(
-        state.current_player
-    )
-    action_history = action_history.at[1, state.step_count].set(action_i8)
+    action_history = _append_action_history(state, action)
     state = _replace_state(state,   # type:ignore
         action_history=action_history
     )
@@ -639,9 +653,7 @@ def _finalize_step_state(
 
 
 def _step_lazy(state: State, action: Array, game_config: Optional[GameConfig] = None) -> State:
-    action_i8 = jnp.int8(action)
-    action_history = state.round_state.action_history.at[0, state.step_count].set(state.current_player)
-    action_history = action_history.at[1, state.step_count].set(action_i8)
+    action_history = _append_action_history(state, action)
     state = _replace_state(state, action_history=action_history)
     state = _dispatch_step_lazy(state, action, game_config)
     return _finalize_step_state(state, game_config, update_shanten=TRUE)
@@ -666,9 +678,7 @@ def verify_step(
 
 
 def _step_verify_lazy(state: State, action: Array, game_config: Optional[GameConfig] = None) -> State:
-    action_i8 = jnp.int8(action)
-    action_history = state.round_state.action_history.at[0, state.step_count].set(state.current_player)
-    action_history = action_history.at[1, state.step_count].set(action_i8)
+    action_history = _append_action_history(state, action)
     state = _replace_state(state, action_history=action_history)
     state = _dispatch_step_lazy(state, action, game_config)
     return _finalize_step_state(state, game_config, update_shanten=FALSE)
@@ -2085,7 +2095,8 @@ def hand_counts_to_idx(counts: Array, fill: int = -1, hand_size: int = 14) -> Ar
 def _observe_dict(state: State) -> Dict:
     """
     - hand: (14,) player's hand [0-33], -1 means empty
-    - action history: (2, 200) action history [player, action], player index is relative to the current player in [0, 3], action is in [0, 78] (-1 means no action)
+    - last_draw: (1,) The last drawn tile [0-36], -1 means no draw
+    - action history: (3, 200) action history [player, action(tile), tsumogiri], player index is relative to the current player in [0, 3], discards store the actual tile in [0, 36], non-discard actions store the raw action id in [0, 86], and tsumogiri is 0/1 for discards and -1 otherwise
     - shanten count: (1,) The number of shanten (0-6)
     - furiten: (1,) Whether the player is in furiten [True/False]
     - scores: (4,) The scores of the players ordered from the current player's perspective (c_p, right, across, left)
@@ -2124,6 +2135,7 @@ def _observe_dict(state: State) -> Dict:
     dora_indicators = jnp.where(state.round_state.dora_indicators[:4] >= 0, Tile.to_tile_type(state.round_state.dora_indicators[:4]), state.round_state.dora_indicators[:4])
     return {
         "hand": hand_c_p_14,
+        "last_draw": state.round_state.last_draw,
         "action_history": action_history,
         "shanten_count": shanten_c_p,
         "furiten": furiten,
@@ -2368,4 +2380,3 @@ def _observe_2D(state: State) -> Array:
     )  # (299,34)
 
     return obs
-

@@ -10,6 +10,7 @@ from mahjax.red_mahjong.env import (
     _make_legal_action_mask_after_draw,
     _next_meld_player,
     _next_ron_player,
+    _step,
 )
 from mahjax.red_mahjong.state import default_state
 from mahjax.red_mahjong.tile import Tile
@@ -40,6 +41,16 @@ def test_mask_after_draw_has_discard_or_tsumogiri() -> None:
     new_tile = int(state.round_state.last_draw)
     mask = _make_legal_action_mask_after_draw(state, hand, c_p, new_tile)
     assert bool(mask[Action.TSUMOGIRI] | jnp.any(mask[: Tile.NUM_TILE_TYPE_WITH_RED]))
+
+
+def test_tsumogiri_action_history_records_actual_tile_and_flag() -> None:
+    state = _init(jax.random.PRNGKey(4))
+    last_draw = int(state.round_state.last_draw)
+    next_state = _step(state, jnp.int8(Action.TSUMOGIRI))
+
+    assert int(next_state.round_state.action_history[0, 0]) == int(state.current_player)
+    assert int(next_state.round_state.action_history[1, 0]) == last_draw
+    assert int(next_state.round_state.action_history[2, 0]) == 1
 
 
 def test_next_meld_player_prioritizes_ron_then_distance() -> None:
