@@ -1,10 +1,4 @@
-# NOTE: This file is copied and modified from Pgx (https://github.com/sotetsuk/pgx).
-# Copyright belongs to the original authors.
-# We keep tracking the updates of original Pgx implementation.
-# We try to minimize the modification to this file. Exceptions includes:
-#   - remove unnesesary env implementation since mahjax only support mahjong environment.
-#
-# Copyright 2023 The Pgx Authors.
+# Copyright 2025 The Mahjax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -237,9 +231,6 @@ def save_svg(
 ) -> None:
     if use_english:
         language = "en"
-    if state.env_id.startswith("minatar"):
-        state.save_svg(filename=filename)
-        return
     backend = _mahjong_svg_backend(state.env_id)
     if backend is not None:
         backend.save_svg(state, filename, language=language)
@@ -260,9 +251,6 @@ def save_svg_animation(
 ) -> None:
     if use_english:
         language = "en"
-    assert not states[0].env_id.startswith(
-        "minatar"
-    ), "MinAtar does not support svg animation."
     backend = _mahjong_svg_backend(states[0].env_id)
     if backend is not None:
         backend.save_svg_animation(
