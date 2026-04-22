@@ -61,7 +61,7 @@ rng = jax.random.PRNGKey(0)
 
 # Initialize environment
 env = mahjax.make(
-    "no_red_mahjong",
+    "red_mahjong",
     one_round=True,      # True: Single round, False: Hanchan (East-South game)
     observe_type="dict", # "dict" for Transformer, "2D" for CNN
     order_points=[30, 10, -10, -30] # Final score bonuses (uma)
@@ -89,8 +89,8 @@ obs = obs_fn(state)
 ### On rules of JAPANESE RIICHI Mahjong
 There are several variants of Japanese Riichi Mahjong. The most significant distinction is the inclusion of "Red 5" tiles (aka-dora).
 
-- **Current Support**: Standard 4-player rules without red tiles.
-- **Future Plans**: We plan to incorporate popular variants, including Red 5 tiles and 3-player Mahjong (Sanma).
+- **Current Support**: Standard 4-player rules with and without red tiles.
+- **Selection**: Use `mahjax.make("red_mahjong")` or `mahjax.make("no_red_mahjong")`.
 
 ## User interface
 MahJax includes a web-based UI (FastAPI + JS) that allows you to play against built-in or custom agents directly in your browser.
@@ -129,7 +129,7 @@ Run `uvicorn my_ui:app --port 8000`.
 | Rule | Status | Code |
 |------|--------|------|
 | No-Red Mahjong | ✅ | [no_red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/no_red_mahjong) |
-| Red Mahjong | 🚧 | [red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/red_mahjong) |
+| Red Mahjong | ✅ | [red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/red_mahjong) |
 | Selective Rules | 🚧 | |
 | 3-player Mahjong | 🚧 | |
 
