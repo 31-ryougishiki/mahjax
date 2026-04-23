@@ -63,6 +63,8 @@ def _observe_dict(state: State) -> Dict:
     )
     action_history = state._action_history.at[0, :].set(relative_player_history)
 
+    last_draw = state._last_draw[c_p]
+
     # game features
     shanten_c_p = state._shanten_c_p
     furiten = state._furiten_by_discard[c_p] | state._furiten_by_pass[c_p]
@@ -75,6 +77,7 @@ def _observe_dict(state: State) -> Dict:
     dora_indicators = state._dora_indicators[:4]  # (4,)
     return {
         "hand": hand_c_p_14,
+        "last_draw": last_draw_tile,
         "action_history": action_history,
         "shanten_count": shanten_c_p,
         "furiten": furiten,
