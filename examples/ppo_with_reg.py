@@ -5,6 +5,7 @@ PPO with Regularization trainer for MahJax.
 
 import sys
 import time
+import os
 from typing import Dict, Literal, NamedTuple, Any, Optional
 import pickle
 
@@ -21,9 +22,16 @@ import wandb
 
 import mahjax
 from mahjax.wrappers.auto_reset_wrapper import auto_reset
-from network import ACNet
-
 from bc import visualize_game
+from common import (
+    default_bc_params_path,
+    default_rl_params_path,
+    get_network_cls,
+    get_state_has_won,
+    get_state_meld_counts,
+    get_state_riichi,
+    get_state_score,
+)
 
 # Constants
 MAX_REWARD = 320.0  # Normalization factor for reward
@@ -66,9 +74,12 @@ class PPOWithRegArgs(BaseModel):
     class args: extra = "forbid"
 
 args = PPOWithRegArgs(**OmegaConf.to_object(OmegaConf.from_cli()))
+NETWORK_CLS = get_network_cls(args.env_name)
+if args.pretrained_model_path == "bc_params.pkl":
+    args.pretrained_model_path = default_bc_params_path(args.env_name)
 print(args, file=sys.stderr)
 
-BASE_ENV = mahjax.make("no_red_mahjong", one_round=args.one_round, observe_type="dict")
+BASE_ENV = mahjax.make(args.env_name, one_round=args.one_round, observe_type="dict")
 step_fn = auto_reset(BASE_ENV.step, BASE_ENV.init)
 NUM_PLAYERS, NUM_UPDATES = BASE_ENV.num_players, int(args.total_timesteps // (args.num_envs * args.num_steps))
 BATCH_SIZE = args.num_envs * args.num_steps
@@ -290,7 +301,7 @@ def make_evaluator(network: nn.Module, num_eval_envs, baseline_params):
             )
             
             is_agent = (seat_policy_ids == 0)
-            scores = final_states._score
+            scores = get_state_score(final_states)
             agent_scores = (scores * is_agent).sum(axis=1)
             opponent_scores_avg = (scores * (~is_agent)).sum(axis=1) / 3.0
             return {
@@ -299,9 +310,9 @@ def make_evaluator(network: nn.Module, num_eval_envs, baseline_params):
                 "agent_score": agent_scores.mean(),
                 "opponent_score": opponent_scores_avg.mean(),
                 "avg_rank": (1 + (scores > agent_scores[:, None]).sum(axis=1) + 0.5 * ((scores == agent_scores[:, None]).sum(axis=1) - 1)).mean(),
-                "hora_rate": ((final_states._has_won & is_agent).any(axis=1)).mean(),
-                "riichi_rate": ((final_states._riichi & is_agent).any(axis=1)).mean(),
-                "meld_rate": ((final_states._n_meld > 0) & is_agent).any(axis=1).mean()
+                "hora_rate": ((get_state_has_won(final_states) & is_agent).any(axis=1)).mean(),
+                "riichi_rate": ((get_state_riichi(final_states) & is_agent).any(axis=1)).mean(),
+                "meld_rate": ((get_state_meld_counts(final_states) > 0) & is_agent).any(axis=1).mean()
             }
 
         key_ret, key_rand, key_base = jax.random.split(key, 3)
@@ -314,7 +325,7 @@ def make_evaluator(network: nn.Module, num_eval_envs, baseline_params):
 def train(rng_key):
     rng, key_net, key_reset = jax.random.split(rng_key, 3)
     # Network Initialization
-    network = ACNet()
+    network = NETWORK_CLS()
     dummy_obs = BASE_ENV.observe(BASE_ENV.init(jax.random.PRNGKey(0)))
     params = network.init(key_net, dummy_obs)
     # Initialize train state
@@ -389,5 +400,8 @@ if __name__ == "__main__":
     wandb.init(project=args.wandb_project, config=args.dict())
     final_state = train(jax.random.PRNGKey(args.seed))
     if args.save_model:
-        with open(f"{args.env_name}-seed={args.seed}.ckpt", "wb") as f: pickle.dump(final_state.params, f)
+        save_path = default_rl_params_path(args.env_name, args.seed)
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        with open(save_path, "wb") as f:
+            pickle.dump(final_state.params, f)
     visualize_game(args, final_state)
