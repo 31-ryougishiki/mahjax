@@ -918,7 +918,7 @@ def _discard(state: State, tile: Array, game_config: Optional[GameConfig] = None
     state = _replace_state(
         state,
         can_after_kan=FALSE,
-        is_haitei=state.round_state.is_haitei | (is_abortive_draw_normal & ~had_after_kan),
+        is_haitei=state.round_state.is_haitei | is_abortive_draw_normal,
     )
     state = jax.lax.cond(
         is_three_player_ron,
@@ -968,8 +968,7 @@ def _make_legal_action_mask_after_discard(
     # draws propagate via ``is_haitei``; after-kan discard chains can also be
     # the final discard once the live wall is exhausted, so we detect that here.
     haitei = state.round_state.is_haitei | (
-        (state.round_state.next_deck_ix < _live_wall_end_ix(state))
-        & ~state.round_state.can_after_kan
+        state.round_state.next_deck_ix < _live_wall_end_ix(state)
     )
     riichi = state.players.riichi[c_p]
     discarder = state.current_player
