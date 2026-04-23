@@ -40,13 +40,16 @@ Mahjax is available on PyPI. Please make sure that your Python environment has j
 pip install mahjax
 ```
 
-Mahjax is currently under active development. If you prefer to use the latest codebase with the newest features, please clone the repository and install it in editable mode:
+📣 Mahjax is currently under active development. If you prefer to use the latest codebase with the newest features, please clone the repository and install it in editable mode:
 
 ```bash
 git clone https://github.com/nissymori/mahjax.git
 cd mahjax
 pip install -e .
 ```
+
+> [!NOTE]
+> The current API is still provisional and under active development, so it may change in future releases.
 
 ### Basic Usage
 We basically follow the [Pgx](https://github.com/sotetsuk/pgx) API design.
