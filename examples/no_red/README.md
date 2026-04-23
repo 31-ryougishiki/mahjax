@@ -8,7 +8,7 @@ The code covers three main steps:
 3. **Reinforcement Learning (RL):** Training a PPO agent with regularization towards the BC model ([`ppo_with_reg.py`](https://github.com/nissymori/mahjax/blob/main/examples/no_red/ppo_reg.py).
 
 <div align="center">
-<img src="https://github.com/nissymori/mahjax/blob/main/examples/no_red/assets/rlresults.png" width="90%">
+<img src="https://github.com/nissymori/mahjax/blob/main/examples/assets/no_red_rlresults.png" width="90%">
 </div>
 
 ### Data Collection
