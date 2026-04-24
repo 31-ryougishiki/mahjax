@@ -31,3 +31,5 @@ tests/red_mahjong/assets
 tests/red_mahjong/test_replay.py
 logs/
 data/tenhou/
+params
+offline_data

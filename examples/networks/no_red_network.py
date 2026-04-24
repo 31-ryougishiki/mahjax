@@ -1,14 +1,12 @@
-from typing import Dict, Any, Tuple
-from functools import partial
-from pathlib import Path
-import jax
+from typing import Dict
 import jax.numpy as jnp
 import flax.linen as nn
-import distrax
-import orbax.checkpoint as ocp
 from mahjax.no_red_mahjong.action import Action
 from mahjax.no_red_mahjong.tile import Tile
-from typing import Literal
+try:
+    from .transformer import TransformerBlock, orthogonal_init
+except ImportError:
+    from networks.transformer import TransformerBlock, orthogonal_init
 
 # Definitions
 NUM_PLAYERS = 4
@@ -36,40 +34,6 @@ MAX_WIND_VALUE = 3.0
 
 NEG = -1e9
 
-# Initialization function
-def orthogonal_init(scale: float = jnp.sqrt(2.0)):
-    return nn.initializers.orthogonal(scale)
-
-class TransformerBlock(nn.Module):
-    features: int
-    num_heads: int
-    mlp_dim: int
-
-    @nn.compact
-    def __call__(self, x, mask=None):
-        # Attention Block (Pre-Norm)
-        y = nn.LayerNorm()(x)
-        
-        # Mask shape adjustment for MultiHeadDotProductAttention
-        # (Batch, SeqLen) -> (Batch, 1, 1, SeqLen)
-        if mask is not None and mask.ndim == 2:
-            mask = mask[:, None, None, :]
-        
-        y = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads,
-            kernel_init=orthogonal_init(),
-            deterministic=True
-        )(y, mask=mask)
-        x = x + y
-
-        # MLP Block (Pre-Norm)
-        y = nn.LayerNorm()(x)
-        y = nn.Dense(self.mlp_dim, kernel_init=orthogonal_init())(y)
-        y = nn.relu(y)
-        y = nn.Dense(self.features, kernel_init=orthogonal_init())(y)
-        x = x + y
-        
-        return x
 
 class FeatureExtractor(nn.Module):
     @nn.compact
@@ -224,5 +188,3 @@ class ACNet(nn.Module):
     def get_value(self, obs):
         features = self.critic_extractor(obs)
         return self.value_critic_mlp(features).squeeze(-1)
-
-
