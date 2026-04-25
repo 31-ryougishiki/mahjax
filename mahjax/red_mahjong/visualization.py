@@ -22,16 +22,22 @@ from .meld import Meld
 from .state import EnvState
 from .tile import River, Tile
 
-_W = 30.0
-_H = 45.0
+_W = 32.0
+_H = 48.0
 _BOARD = 700.0
 _CENTER = _BOARD / 2.0
+_CENTER_BOX_SIZE = 6.0 * _W
 _HAND_X = 120.0
 _HAND_Y = 640.0
 _RIVER_X0 = _CENTER - 3.0 * _W
 _RIVER_Y0 = 450.0
-_DORA_SCALE = 0.62
+_DORA_SCALE = 0.70
 _DORA_GAP = 4.0
+_DORA_Y = _CENTER - 8.0
+_REMAINING_TILES_Y = _CENTER + 47.0
+_SCORE_Y = _CENTER + _CENTER_BOX_SIZE / 2.0 - 10.0
+_RIICHI_BAR_Y = _CENTER + _CENTER_BOX_SIZE / 2.0 - 4.0
+_RIICHI_DOT_Y = _CENTER + _CENTER_BOX_SIZE / 2.0 + 1.0
 Language = Literal["ja", "en"]
 _PLAYER_WIND_LABELS = {
     "ja": ("東", "南", "西", "北"),
@@ -286,12 +292,12 @@ def _player_group(
     seat_wind_font = f' font-family="{_JA_FONT_FAMILY}"' if language == "ja" else ""
     parts.append(
         f'<text x="265" y="435" font-size="22" fill="#000"{seat_wind_font}>{seat_wind}</text>'
-        f'<text x="{_CENTER-45:.1f}" y="{_CENTER+70:.1f}" font-size="20" fill="#000">{score}</text>'
+        f'<text x="{_CENTER:.1f}" y="{_SCORE_Y:.1f}" text-anchor="middle" font-size="20" fill="#000">{score}</text>'
     )
     if bool(state.players.riichi[player]):
         parts.append(
-            f'<rect x="{_CENTER-50:.1f}" y="{_CENTER+75:.1f}" width="100" height="10" fill="#fff" stroke="#000" />'
-            f'<circle cx="{_CENTER:.1f}" cy="{_CENTER+80:.1f}" r="3" fill="red" />'
+            f'<rect x="{_CENTER-50:.1f}" y="{_RIICHI_BAR_Y:.1f}" width="100" height="10" fill="#fff" stroke="#000" />'
+            f'<circle cx="{_CENTER:.1f}" cy="{_RIICHI_DOT_Y:.1f}" r="3" fill="red" />'
         )
 
     tiles = _counts_to_tiles(state.players.hand_with_red[player])
@@ -396,7 +402,11 @@ def render_round_svg(
     parts: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{_BOARD:.0f}" height="{_BOARD:.0f}" viewBox="0 0 {_BOARD:.0f} {_BOARD:.0f}">',
         f'<rect x="0" y="0" width="{_BOARD:.0f}" height="{_BOARD:.0f}" fill="#ffffff" />',
-        f'<rect x="{_CENTER-90:.1f}" y="{_CENTER-90:.1f}" width="180" height="180" fill="#fff" stroke="#000" stroke-width="2" rx="3" ry="3" />',
+        (
+            f'<rect x="{_CENTER-_CENTER_BOX_SIZE/2.0:.1f}" y="{_CENTER-_CENTER_BOX_SIZE/2.0:.1f}" '
+            f'width="{_CENTER_BOX_SIZE:.1f}" height="{_CENTER_BOX_SIZE:.1f}" '
+            'fill="#fff" stroke="#000" stroke-width="2" rx="3" ry="3" />'
+        ),
         (
             f'<text x="{_CENTER:.1f}" y="{_CENTER-25:.1f}" text-anchor="middle" font-size="22" fill="#000"'
             f' font-family="{_JA_FONT_FAMILY}">{round_label}</text>'
@@ -408,7 +418,7 @@ def render_round_svg(
         dora_w = _W * _DORA_SCALE
         total_w = len(dora) * dora_w + max(0, len(dora) - 1) * _DORA_GAP
         dx = _CENTER - total_w / 2.0
-        dy = _CENTER - 2.0
+        dy = _DORA_Y
         for i, tile in enumerate(dora):
             parts.append(
                 _image_tag_scaled(
@@ -420,7 +430,7 @@ def render_round_svg(
                 )
             )
     parts.append(
-        f'<text x="{_CENTER-15:.1f}" y="{_CENTER+45:.1f}" font-size="20" fill="#000">x {remaining_tiles}</text>'
+        f'<text x="{_CENTER-15:.1f}" y="{_REMAINING_TILES_Y:.1f}" font-size="20" fill="#000">x {remaining_tiles}</text>'
     )
     for player in range(NUM_PLAYERS):
         group = _player_group(
