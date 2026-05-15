@@ -18,7 +18,7 @@ from mahjax.red_mahjong.state import (
 from mahjax.red_mahjong.tile import River, Tile
 from mahjax.red_mahjong.yaku import Yaku
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 __all__ = [
     # types
