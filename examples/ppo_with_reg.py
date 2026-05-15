@@ -28,6 +28,7 @@ from common import (
     default_rl_params_path,
     get_network_cls,
 )
+from utils import make_eval_fn
 
 # Constants
 MAX_REWARD = 320.0  # Normalization factor for reward
@@ -266,54 +267,29 @@ def make_update_fn(network: nn.Module, magnet_params: Optional[Dict[str, Any]] =
 
 
 def make_evaluator(network: nn.Module, num_eval_envs, baseline_params):
+    one_vs_three = make_eval_fn(BASE_ENV, num_eval_envs)
+
+    def make_net_actor(params):
+        def actor(state, key):
+            del key
+            logits, _ = network.apply(params, BASE_ENV.observe(state))
+            return jnp.argmax(jnp.where(state.legal_action_mask, logits, NEG))
+        return actor
+
+    def random_actor(state, key):
+        return jax.random.categorical(key, jnp.where(state.legal_action_mask, 0.0, NEG))
+
+    baseline_actor = make_net_actor(baseline_params)
+
     def evaluate(params, key):
-        def play_episode(state, seat_policy_ids, player_params, opponent_type, key_episode):
-            def body_fn(carry, _):
-                current_state, rng = carry
-                rng, agent_key, opp_key, step_key = jax.random.split(rng, 4)
-                # AGENT ACTION (Policy)
-                logits, _ = network.apply(player_params, BASE_ENV.observe(current_state))
-                agent_action = jnp.argmax(jnp.where(current_state.legal_action_mask, logits, NEG))
-                # OPPOENT ACTION (Baseline)
-                baseline_logits, _ = network.apply(baseline_params, BASE_ENV.observe(current_state))
-                baseline_action = jnp.argmax(jnp.where(current_state.legal_action_mask, baseline_logits, NEG))
-                rand_logits = jnp.where(current_state.legal_action_mask, 0.0, NEG)
-                random_action = jax.random.categorical(opp_key, rand_logits)
-
-                final_action = jnp.where(seat_policy_ids[current_state.current_player] == 0, agent_action, jnp.where(opponent_type == 0, random_action, baseline_action))
-                next_state = lax.cond(current_state.terminated | current_state.truncated, lambda x: x, lambda x: BASE_ENV.step(x, final_action, step_key), current_state)
-                return (next_state, rng), None
-            (final_state, _), _ = lax.scan(body_fn, (state, key_episode), None, length=200)
-            return final_state
-
-        def evaluate_vs_opponent(key_run, opponent_type):
-            key_run, key_init, key_assign, key_play = jax.random.split(key_run, 4)
-            seats = jnp.arange(NUM_PLAYERS)[None, :]
-            solo_seat_idx = jax.random.randint(key_assign, (num_eval_envs,), 0, NUM_PLAYERS)
-            seat_policy_ids = jnp.where(seats == solo_seat_idx[:, None], 0, 1) # 0=Agent
-            
-            final_states = jax.vmap(play_episode, (0, 0, None, None, 0))(
-                jax.vmap(BASE_ENV.init)(jax.random.split(key_init, num_eval_envs)), seat_policy_ids, params, opponent_type, jax.random.split(key_play, num_eval_envs)
-            )
-            
-            is_agent = (seat_policy_ids == 0)
-            scores = final_states.round_state.score
-            agent_scores = (scores * is_agent).sum(axis=1)
-            opponent_scores_avg = (scores * (~is_agent)).sum(axis=1) / 3.0
-            return {
-                "win_rate": (agent_scores > (scores * (~is_agent)).max(axis=1)).mean(),
-                "avg_margin": (agent_scores - opponent_scores_avg).mean(),
-                "agent_score": agent_scores.mean(),
-                "opponent_score": opponent_scores_avg.mean(),
-                "avg_rank": (1 + (scores > agent_scores[:, None]).sum(axis=1) + 0.5 * ((scores == agent_scores[:, None]).sum(axis=1) - 1)).mean(),
-                "hora_rate": ((final_states.players.has_won & is_agent).any(axis=1)).mean(),
-                "riichi_rate": ((final_states.players.riichi & is_agent).any(axis=1)).mean(),
-                "meld_rate": ((final_states.players.meld_counts > 0) & is_agent).any(axis=1).mean()
-            }
-
-        key_ret, key_rand, key_base = jax.random.split(key, 3)
-        log = {f"vs_rand/{k}": v for k, v in evaluate_vs_opponent(key_rand, 0).items()}
-        log.update({f"vs_baseline/{k}": v for k, v in evaluate_vs_opponent(key_base, 1).items()})
+        agent_actor = make_net_actor(params)
+        vs_rand_fn = one_vs_three(agent_actor, random_actor)
+        vs_base_fn = one_vs_three(agent_actor, baseline_actor)
+        base_vs_agent_fn = one_vs_three(baseline_actor, agent_actor)
+        key_ret, key_rand, key_base, key_base_vs_agent = jax.random.split(key, 4)
+        log = {f"vs_rand/{k}": v for k, v in vs_rand_fn(key_rand).items()}
+        log.update({f"vs_baseline/{k}": v for k, v in vs_base_fn(key_base).items()})
+        log.update({f"base_vs_agent/{k}": v for k, v in base_vs_agent_fn(key_base_vs_agent).items()})
         return key_ret, log
     return evaluate
 
