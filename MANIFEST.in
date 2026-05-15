@@ -1,2 +1,4 @@
 include LICENSE
-recursive-include mahjax/no_red_mahjong/cache *.npz
+recursive-include mahjax/_src/cache *.npz
+recursive-include mahjax/_src/assets *.svg
+recursive-include mahjax/ui/static *
