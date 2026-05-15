@@ -404,8 +404,14 @@ class Yaku:
             Yaku.MAX_PATTERNS,
             jnp.all(Meld.has_outside(melds) | (melds == EMPTY_MELD)),
         )
-        meld_chow_bits = jnp.bitwise_or.reduce(jax.vmap(Meld.chow)(melds).astype(jnp.int32))
-        meld_pung_bits = jnp.bitwise_or.reduce(jax.vmap(Meld.suited_pung)(melds).astype(jnp.int32))
+        meld_chow_bits = jax.lax.reduce(
+            jax.vmap(Meld.chow)(melds).astype(jnp.int32),
+            jnp.int32(0), jax.lax.bitwise_or, (0,),
+        )
+        meld_pung_bits = jax.lax.reduce(
+            jax.vmap(Meld.suited_pung)(melds).astype(jnp.int32),
+            jnp.int32(0), jax.lax.bitwise_or, (0,),
+        )
         all_chow = jnp.full(Yaku.MAX_PATTERNS, meld_chow_bits, dtype=jnp.int32)
         all_pung = jnp.full(Yaku.MAX_PATTERNS, meld_pung_bits, dtype=jnp.int32)
         n_kan = jnp.sum(Meld.is_kan(melds) & (melds != EMPTY_MELD))

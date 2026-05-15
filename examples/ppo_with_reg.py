@@ -383,7 +383,7 @@ def train(rng_key):
         })
 
         if args.do_eval and ((i + 1) % args.eval_interval == 0 or i + 1 == NUM_UPDATES):
-            rng = eval_and_log(rng, steps, i + 1, train_state.params)
+            rng = eval_and_log(rng, steps, i + 1, train_state.params, magnet_params)
     print(f"Training time: {time.time() - start_time} seconds", flush=True)
     wandb.log({"train_time": time.time() - start_time, "steps": steps})
     return train_state

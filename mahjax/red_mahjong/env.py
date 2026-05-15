@@ -281,6 +281,7 @@ class RedMahjong(Env):
         self.order_points = order_points
         self.game_config = _resolve_game_config(game_config)
         self.next_round_style = next_round_style
+        self._step_fn = _step_auto if next_round_style == "auto" else _step_dummy_share
 
     def init(self, key: PRNGKey) -> State:
         """Return the initial state. Note that no internal state of
@@ -314,11 +315,9 @@ class RedMahjong(Env):
             order_points=jnp.array(self.order_points, dtype=jnp.int32),
         )
 
-        step_fn = (
-            _step_auto if self.next_round_style == "auto" else _step_dummy_share
-        )
+
         stepped_state = _replace_state(
-            step_fn(state, action, self.game_config),
+            self._step_fn(state, action, self.game_config),
             step_count=state.step_count + 1,
         )
         state = jax.lax.cond(
