@@ -88,9 +88,10 @@ state = step_fn(state, action, rngs)
 # Get observation
 obs = obs_fn(state)
 
-# Visualize
+# Visualize (save_svg renders a single, unbatched state)
+single_state = env.init(jax.random.PRNGKey(1))
 save_svg(
-    state,
+    single_state,
     "state.svg",
     tile_style="bilingual",  # default is "standard"
 )
