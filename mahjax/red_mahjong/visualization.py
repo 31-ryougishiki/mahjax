@@ -39,6 +39,7 @@ _SCORE_Y = _CENTER + _CENTER_BOX_SIZE / 2.0 - 10.0
 _RIICHI_BAR_Y = _CENTER + _CENTER_BOX_SIZE / 2.0 - 4.0
 _RIICHI_DOT_Y = _CENTER + _CENTER_BOX_SIZE / 2.0 + 1.0
 Language = Literal["ja", "en"]
+TileStyle = Literal["standard", "bilingual"]
 _PLAYER_WIND_LABELS = {
     "ja": ("東", "南", "西", "北"),
     "en": ("E", "S", "W", "N"),
@@ -50,10 +51,12 @@ _ROUND_WIND_LABELS = {
 _JA_FONT_FAMILY = "'Noto Sans CJK JP', 'Noto Sans CJK', sans-serif"
 
 
-def _normalize_language(language: Language | str) -> Language:
-    if language not in ("ja", "en"):
-        raise ValueError(f"Unsupported language: {language}")
-    return language
+def _tile_style_to_language(tile_style: TileStyle | str) -> Language:
+    if tile_style == "standard":
+        return "ja"
+    if tile_style == "bilingual":
+        return "en"
+    raise ValueError(f"Unsupported tile_style: {tile_style}")
 
 
 def _is_red_tile(tile: int) -> bool:
@@ -384,9 +387,9 @@ def render_round_svg(
     state: EnvState,
     show_all_hands: bool = True,
     visible_player: int = 0,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> str:
-    language = _normalize_language(language)
+    language = _tile_style_to_language(tile_style)
     dora = [int(tile) for tile in jnp.asarray(state.round_state.dora_indicators) if int(tile) >= 0][:4]
     round_index = int(state.round_state.round)
     if language == "ja":
@@ -450,14 +453,14 @@ def save_svg(
     filename: str | Path,
     show_all_hands: bool = True,
     visible_player: int = 0,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> None:
     Path(filename).write_text(
         render_round_svg(
             state,
             show_all_hands=show_all_hands,
             visible_player=visible_player,
-            language=language,
+            tile_style=tile_style,
         ),
         encoding="utf-8",
     )
@@ -468,9 +471,9 @@ def render_play_history_svg(
     columns: int = 3,
     padding: float = 20.0,
     show_all_hands: bool = True,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> str:
-    language = _normalize_language(language)
+    _tile_style_to_language(tile_style)
     if columns <= 0:
         raise ValueError("columns must be >= 1")
     if not states:
@@ -483,7 +486,11 @@ def render_play_history_svg(
         f'<rect x="0" y="0" width="{width:.0f}" height="{height:.0f}" fill="#ffffff" />',
     ]
     for idx, state in enumerate(states):
-        svg = render_round_svg(state, show_all_hands=show_all_hands, language=language)
+        svg = render_round_svg(
+            state,
+            show_all_hands=show_all_hands,
+            tile_style=tile_style,
+        )
         uri = "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
         col = idx % columns
         row = idx // columns
@@ -502,7 +509,7 @@ def save_play_history_svg(
     columns: int = 3,
     padding: float = 20.0,
     show_all_hands: bool = True,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> None:
     Path(filename).write_text(
         render_play_history_svg(
@@ -510,7 +517,7 @@ def save_play_history_svg(
             columns=columns,
             padding=padding,
             show_all_hands=show_all_hands,
-            language=language,
+            tile_style=tile_style,
         ),
         encoding="utf-8",
     )
@@ -521,9 +528,9 @@ def render_svg_animation(
     frame_duration_seconds: float = 0.2,
     show_all_hands: bool = True,
     visible_player: int = 0,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> str:
-    language = _normalize_language(language)
+    _tile_style_to_language(tile_style)
     if not states:
         raise ValueError("states must not be empty")
     total_seconds = frame_duration_seconds * len(states)
@@ -536,7 +543,7 @@ def render_svg_animation(
             state,
             show_all_hands=show_all_hands,
             visible_player=visible_player,
-            language=language,
+            tile_style=tile_style,
         )
         uri = "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
         frame_id = f"_fr{i:x}"
@@ -558,7 +565,7 @@ def save_svg_animation(
     frame_duration_seconds: float = 0.2,
     show_all_hands: bool = True,
     visible_player: int = 0,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> None:
     Path(filename).write_text(
         render_svg_animation(
@@ -566,7 +573,7 @@ def save_svg_animation(
             frame_duration_seconds=frame_duration_seconds,
             show_all_hands=show_all_hands,
             visible_player=visible_player,
-            language=language,
+            tile_style=tile_style,
         ),
         encoding="utf-8",
     )
@@ -611,11 +618,11 @@ def random_play_and_save_svg(
     filename: str | Path,
     seed: int = 0,
     max_steps: int = 80,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> EnvState:
     history = generate_play_history_states(seed=seed, max_steps=max_steps, policy="random")
     state = history[-1]
-    save_svg(state, filename, language=language)
+    save_svg(state, filename, tile_style=tile_style)
     return state
 
 
@@ -626,7 +633,7 @@ def random_play_history_and_save_svg(
     columns: int = 3,
     padding: float = 20.0,
     show_all_hands: bool = True,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> EnvState:
     history = generate_play_history_states(seed=seed, max_steps=max_steps, policy="random")
     state = history[-1]
@@ -636,7 +643,7 @@ def random_play_history_and_save_svg(
         columns=columns,
         padding=padding,
         show_all_hands=show_all_hands,
-        language=language,
+        tile_style=tile_style,
     )
     return state
 
@@ -648,7 +655,7 @@ def play_history_and_save_svg_animation(
     frame_duration_seconds: float = 0.2,
     show_all_hands: bool = True,
     policy: str = "first_legal",
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> EnvState:
     history = generate_play_history_states(seed=seed, max_steps=max_steps, policy=policy)
     save_svg_animation(
@@ -656,6 +663,6 @@ def play_history_and_save_svg_animation(
         filename,
         frame_duration_seconds=frame_duration_seconds,
         show_all_hands=show_all_hands,
-        language=language,
+        tile_style=tile_style,
     )
     return history[-1]

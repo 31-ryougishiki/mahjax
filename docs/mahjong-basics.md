@@ -3,8 +3,8 @@
 This page is a short introduction to Japanese riichi mahjong for newcomers.
 MahJax ships with two tile sets:
 
-- `ja`: the original tile faces
-- `en`: an English-friendly tile set with the same game information
+- `standard`: the original tile faces
+- `bilingual`: an English-friendly tile set with the same game information
 
 The first half of this page shows both side by side, so you can learn the game and the tile notation at the same time.
 
@@ -29,7 +29,7 @@ The numbered suits are:
 - **Circles (pinzu)** (`p`)
 - **Bamboos (souzu)** (`s`)
 
-| Group | Original tiles | English tiles |
+| Group | Standard tiles | Bilingual tiles |
 | --- | --- | --- |
 | Characters (manzu) | ![1m](assets/tiles/ja/1m.svg){ width="34" } ![2m](assets/tiles/ja/2m.svg){ width="34" } ![3m](assets/tiles/ja/3m.svg){ width="34" } ![4m](assets/tiles/ja/4m.svg){ width="34" } ![5m](assets/tiles/ja/5m.svg){ width="34" } ![6m](assets/tiles/ja/6m.svg){ width="34" } ![7m](assets/tiles/ja/7m.svg){ width="34" } ![8m](assets/tiles/ja/8m.svg){ width="34" } ![9m](assets/tiles/ja/9m.svg){ width="34" } | ![1m](assets/tiles/en/1m.svg){ width="34" } ![2m](assets/tiles/en/2m.svg){ width="34" } ![3m](assets/tiles/en/3m.svg){ width="34" } ![4m](assets/tiles/en/4m.svg){ width="34" } ![5m](assets/tiles/en/5m.svg){ width="34" } ![6m](assets/tiles/en/6m.svg){ width="34" } ![7m](assets/tiles/en/7m.svg){ width="34" } ![8m](assets/tiles/en/8m.svg){ width="34" } ![9m](assets/tiles/en/9m.svg){ width="34" } |
 | Circles (pinzu) | ![1p](assets/tiles/ja/1p.svg){ width="34" } ![2p](assets/tiles/ja/2p.svg){ width="34" } ![3p](assets/tiles/ja/3p.svg){ width="34" } ![4p](assets/tiles/ja/4p.svg){ width="34" } ![5p](assets/tiles/ja/5p.svg){ width="34" } ![6p](assets/tiles/ja/6p.svg){ width="34" } ![7p](assets/tiles/ja/7p.svg){ width="34" } ![8p](assets/tiles/ja/8p.svg){ width="34" } ![9p](assets/tiles/ja/9p.svg){ width="34" } | ![1p](assets/tiles/en/1p.svg){ width="34" } ![2p](assets/tiles/en/2p.svg){ width="34" } ![3p](assets/tiles/en/3p.svg){ width="34" } ![4p](assets/tiles/en/4p.svg){ width="34" } ![5p](assets/tiles/en/5p.svg){ width="34" } ![6p](assets/tiles/en/6p.svg){ width="34" } ![7p](assets/tiles/en/7p.svg){ width="34" } ![8p](assets/tiles/en/8p.svg){ width="34" } ![9p](assets/tiles/en/9p.svg){ width="34" } |
@@ -40,7 +40,7 @@ The numbered suits are:
 Honor tiles are not numbered.
 They are the four winds and the three dragons.
 
-| Group | Original tiles | English tiles |
+| Group | Standard tiles | Bilingual tiles |
 | --- | --- | --- |
 | Winds | ![east](assets/tiles/ja/east.svg){ width="34" } ![south](assets/tiles/ja/south.svg){ width="34" } ![west](assets/tiles/ja/west.svg){ width="34" } ![north](assets/tiles/ja/north.svg){ width="34" } | ![east](assets/tiles/en/east.svg){ width="34" } ![south](assets/tiles/en/south.svg){ width="34" } ![west](assets/tiles/en/west.svg){ width="34" } ![north](assets/tiles/en/north.svg){ width="34" } |
 | Dragons | ![white](assets/tiles/ja/white.svg){ width="34" } ![green](assets/tiles/ja/gd.svg){ width="34" } ![red](assets/tiles/ja/rd.svg){ width="34" } | ![white](assets/tiles/en/white.svg){ width="34" } ![green](assets/tiles/en/gd.svg){ width="34" } ![red](assets/tiles/en/rd.svg){ width="34" } |
@@ -50,7 +50,7 @@ They are the four winds and the three dragons.
 Some rulesets include one special red 5 in each suit.
 MahJax can visualize those too.
 
-| Group | Original tiles | English tiles |
+| Group | Standard tiles | Bilingual tiles |
 | --- | --- | --- |
 | Red fives | ![5mr](assets/tiles/ja/5mr.svg){ width="34" } ![5pr](assets/tiles/ja/5pr.svg){ width="34" } ![5sr](assets/tiles/ja/5sr.svg){ width="34" } | ![5mr](assets/tiles/en/5mr.svg){ width="34" } ![5pr](assets/tiles/en/5pr.svg){ width="34" } ![5sr](assets/tiles/en/5sr.svg){ width="34" } |
 
@@ -63,7 +63,7 @@ Most winning hands in riichi mahjong are built from:
 
 The three basic building blocks are:
 
-| Unit | Original tiles | English tiles | Meaning |
+| Unit | Standard tiles | Bilingual tiles | Meaning |
 | --- | --- | --- | --- |
 | Sequence | <nobr>![4m](assets/tiles/ja/4m.svg){ width="34" } ![5m](assets/tiles/ja/5m.svg){ width="34" } ![6m](assets/tiles/ja/6m.svg){ width="34" }</nobr> | <nobr>![4m](assets/tiles/en/4m.svg){ width="34" } ![5m](assets/tiles/en/5m.svg){ width="34" } ![6m](assets/tiles/en/6m.svg){ width="34" }</nobr> | Three consecutive suit tiles. Honors cannot make sequences. |
 | Triplet | <nobr>![7p](assets/tiles/ja/7p.svg){ width="34" } ![7p](assets/tiles/ja/7p.svg){ width="34" } ![7p](assets/tiles/ja/7p.svg){ width="34" }</nobr> | <nobr>![7p](assets/tiles/en/7p.svg){ width="34" } ![7p](assets/tiles/en/7p.svg){ width="34" } ![7p](assets/tiles/en/7p.svg){ width="34" }</nobr> | Three identical tiles. |
@@ -73,8 +73,8 @@ Here is a complete standard hand:
 
 | Tile set | Hand |
 | --- | --- |
-| Orig. | <nobr>![1m](assets/tiles/ja/1m.svg){ width="34" } ![2m](assets/tiles/ja/2m.svg){ width="34" } ![3m](assets/tiles/ja/3m.svg){ width="34" } ![4m](assets/tiles/ja/4m.svg){ width="34" } ![5m](assets/tiles/ja/5m.svg){ width="34" } ![6m](assets/tiles/ja/6m.svg){ width="34" } ![7p](assets/tiles/ja/7p.svg){ width="34" } ![8p](assets/tiles/ja/8p.svg){ width="34" } ![9p](assets/tiles/ja/9p.svg){ width="34" } ![7s](assets/tiles/ja/7s.svg){ width="34" } ![7s](assets/tiles/ja/7s.svg){ width="34" } ![7s](assets/tiles/ja/7s.svg){ width="34" } ![east](assets/tiles/ja/east.svg){ width="34" } ![east](assets/tiles/ja/east.svg){ width="34" }</nobr> |
-| EN | <nobr>![1m](assets/tiles/en/1m.svg){ width="34" } ![2m](assets/tiles/en/2m.svg){ width="34" } ![3m](assets/tiles/en/3m.svg){ width="34" } ![4m](assets/tiles/en/4m.svg){ width="34" } ![5m](assets/tiles/en/5m.svg){ width="34" } ![6m](assets/tiles/en/6m.svg){ width="34" } ![7p](assets/tiles/en/7p.svg){ width="34" } ![8p](assets/tiles/en/8p.svg){ width="34" } ![9p](assets/tiles/en/9p.svg){ width="34" } ![7s](assets/tiles/en/7s.svg){ width="34" } ![7s](assets/tiles/en/7s.svg){ width="34" } ![7s](assets/tiles/en/7s.svg){ width="34" } ![east](assets/tiles/en/east.svg){ width="34" } ![east](assets/tiles/en/east.svg){ width="34" }</nobr> |
+| Std. | <nobr>![1m](assets/tiles/ja/1m.svg){ width="34" } ![2m](assets/tiles/ja/2m.svg){ width="34" } ![3m](assets/tiles/ja/3m.svg){ width="34" } ![4m](assets/tiles/ja/4m.svg){ width="34" } ![5m](assets/tiles/ja/5m.svg){ width="34" } ![6m](assets/tiles/ja/6m.svg){ width="34" } ![7p](assets/tiles/ja/7p.svg){ width="34" } ![8p](assets/tiles/ja/8p.svg){ width="34" } ![9p](assets/tiles/ja/9p.svg){ width="34" } ![7s](assets/tiles/ja/7s.svg){ width="34" } ![7s](assets/tiles/ja/7s.svg){ width="34" } ![7s](assets/tiles/ja/7s.svg){ width="34" } ![east](assets/tiles/ja/east.svg){ width="34" } ![east](assets/tiles/ja/east.svg){ width="34" }</nobr> |
+| Biling. | <nobr>![1m](assets/tiles/en/1m.svg){ width="34" } ![2m](assets/tiles/en/2m.svg){ width="34" } ![3m](assets/tiles/en/3m.svg){ width="34" } ![4m](assets/tiles/en/4m.svg){ width="34" } ![5m](assets/tiles/en/5m.svg){ width="34" } ![6m](assets/tiles/en/6m.svg){ width="34" } ![7p](assets/tiles/en/7p.svg){ width="34" } ![8p](assets/tiles/en/8p.svg){ width="34" } ![9p](assets/tiles/en/9p.svg){ width="34" } ![7s](assets/tiles/en/7s.svg){ width="34" } ![7s](assets/tiles/en/7s.svg){ width="34" } ![7s](assets/tiles/en/7s.svg){ width="34" } ![east](assets/tiles/en/east.svg){ width="34" } ![east](assets/tiles/en/east.svg){ width="34" }</nobr> |
 
 This hand is:
 
@@ -118,7 +118,7 @@ For beginners, the three most useful yaku to learn first are:
 - **All simples (tanyao)**
 - **Value honor triplet (yakuhai)**
 
-From this section onward, the examples use the English tiles only.
+From this section onward, the examples use the Bilingual tiles only.
 
 ### All simples (tanyao)
 
