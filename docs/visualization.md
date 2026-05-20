@@ -7,6 +7,11 @@ MahJax exposes two main helpers for SVG output:
 
 If you were looking for `save_animation`, the current public function name is **`save_svg_animation`**.
 
+Both helpers accept `tile_style`:
+
+- `tile_style="standard"`: default riichi mahjong tiles
+- `tile_style="bilingual"`: tiles with English-friendly labels for non-kanji readers
+
 ## 1. Save a single SVG
 
 The quickest path is:
@@ -39,7 +44,7 @@ state = env.init(jax.random.PRNGKey(0))
 mahjax.save_svg(state, "round-bilingual.svg", tile_style="bilingual")
 ```
 
-The `tile_style` switch changes the tile art. Use `tile_style="bilingual"` when your audience does not read kanji.
+The default is `tile_style="standard"`, so you only need to pass `tile_style` when you want the bilingual tile set.
 
 ## 2. Save an SVG animation
 
@@ -112,7 +117,7 @@ mahjax.save_svg(
 )
 ```
 
-The default is `show_all_hands=True` (all hands revealed), so existing code is unaffected.
+The default is `show_all_hands=True` (all hands revealed).
 
 ## 4. Using the state method directly
 
