@@ -19,8 +19,8 @@
 
 > [!NOTE]
 > Japanese Riichi Mahjong is a challenging multi-agent RL environment with *imperfect information*, *stochastic dynamics*, *more than two players*, and *high-dimensional observations*.
-> Mahjax aims to make Mahjong research more accessible to a broader RL community.
-> For newcommers, please see our [basic introduction](https://nissymori.github.io/mahjax/mahjong-basics/) and the *bilingual visualization*.
+> MahJax aims to make Mahjong research more accessible to a broader RL community.
+> For newcomers, please see our [basic introduction](https://nissymori.github.io/mahjax/mahjong-basics/) and the *bilingual visualization*.
 
 
 ## Overview
@@ -34,12 +34,12 @@ For more details, please refer to the [Documentation](https://nissymori.github.i
 
 ## Quick Start
 ### Install
-Mahjax is available on PyPI. Please make sure that your Python environment has `jax` and `jaxlib` installed, depending on your hardware setup.
+MahJax is available on PyPI. Please make sure that your Python environment has `jax` and `jaxlib` installed, depending on your hardware setup.
 ```bash
 pip install mahjax
 ```
 
-📣 Mahjax is currently under active development. If you prefer to use the latest codebase with the newest features, please clone the repository and install it in editable mode:
+📣 MahJax is currently under active development. If you prefer to use the latest codebase with the newest features, please clone the repository and install it in editable mode:
 
 ```bash
 git clone https://github.com/nissymori/mahjax.git
@@ -85,10 +85,15 @@ rngs = jax.random.split(subrng, batch_size)
 action = jnp.zeros((batch_size,), dtype=jnp.int8)
 state = step_fn(state, action, rngs)
 
+# Get observation
+obs = obs_fn(state)
+
 # Visualize
+single_state = env.init(jax.random.PRNGKey(1))
 save_svg(
-    state,
-    tile_style="bilingual", # default is "standard".
+    single_state,
+    "round.svg",
+    tile_style="bilingual",  # default is "standard"
 )
 ```
 
@@ -152,7 +157,7 @@ You can configure the environment with:
 
 ```python
 env = mahjax.make(
-    id="red_mahjong",
+    "red_mahjong",
     round_mode="single",
     observe_type="dict",
     order_points=[30, 10, -10, -30],
@@ -178,7 +183,7 @@ JAX-based environments
 Paper coming soon.
 
 ## Acknowledgement
-- [sotetsuk](https://github.com/sotetsuk): For general advice on the development of mahjax based on his experience developing pgx.
+- [sotetsuk](https://github.com/sotetsuk): For general advice on the development of MahJax based on his experience developing pgx.
 - [habara-k](https://github.com/habara-k): For developing core JAX components such as shanten and Yaku calculation.
 - [OkanoShinri](https://github.com/OkanoShinri): For the initial implementation of MahJax and its SVG visualization.
-- [easonyu0203](easonyu0203): For advice on PPO implementation in a multi-player imperfect-information game.
+- [easonyu0203](https://github.com/easonyu0203): For advice on PPO implementation in a multi-player imperfect-information game.

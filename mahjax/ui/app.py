@@ -67,7 +67,7 @@ class VisibilityRequest(BaseModel):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="MahJax Human vs AI UI", version="0.1.0")
+    app = FastAPI(title="MahJax Human vs AI UI", version="0.1.1")
     manager = GameManager()
     manager_lock = asyncio.Lock()
     app.state.manager = manager

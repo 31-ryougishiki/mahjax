@@ -8,13 +8,13 @@
 
 > [!NOTE]
 > Japanese Riichi Mahjong is a challenging multi-agent RL environment with *imperfect information*, *stochastic dynamics*, *more than two players*, and *high-dimensional observations*.
-> Mahjax aims to make Mahjong research more accessible to a broader RL community.
-> For newcommers, please see our [basic introduction](https://nissymori.github.io/mahjax/mahjong-basics/) and the *bilingual visualization*.
+> MahJax aims to make Mahjong research more accessible to a broader RL community.
+> For newcomers, please see our [basic introduction](https://nissymori.github.io/mahjax/mahjong-basics/) and the *bilingual visualization*.
 
 
 ## Overview
 
-- 🚀 **Vectorized Environment:** Extremely fast (approx. **1.6M steps/sec** on 8x A100 GPUs).
+- 🚀 **Vectorized Environment:** Extremely fast (approx. **2M steps/sec** on 8x A100 GPUs).
 - 🎨 **Rich Visualization:** SVG-based visualization with bilingual support **for those unfamiliar with Kanji**.
 - 🎮 **Playable Interface:** A web-based UI allows you to play directly against the agents you train.
 - 📚 **RL Examples:** Simple examples for Behavior Cloning + PPO in the [`examples/`](https://github.com/nissymori/mahjax/tree/main/examples).
@@ -23,12 +23,12 @@ For more details, please refer to the [Documentation](https://nissymori.github.i
 
 ## Quick Start
 ### Install
-Mahjax is available on PyPI. Please make sure that your Python environment has `jax` and `jaxlib` installed, depending on your hardware setup.
+MahJax is available on PyPI. Please make sure that your Python environment has `jax` and `jaxlib` installed, depending on your hardware setup.
 ```bash
 pip install mahjax
 ```
 
-📣 Mahjax is currently under active development. If you prefer to use the latest codebase with the newest features, please clone the repository and install it in editable mode:
+📣 MahJax is currently under active development. If you prefer to use the latest codebase with the newest features, please clone the repository and install it in editable mode:
 
 ```bash
 git clone https://github.com/nissymori/mahjax.git
@@ -46,6 +46,7 @@ We basically follow the [Pgx](https://github.com/sotetsuk/pgx) API design.
 import jax
 import jax.numpy as jnp
 import mahjax
+from mahjax import save_svg
 
 batch_size = 10
 rng = jax.random.PRNGKey(0)
@@ -75,6 +76,14 @@ state = step_fn(state, action, rngs)
 
 # Get observation
 obs = obs_fn(state)
+
+# Visualize
+single_state = env.init(jax.random.PRNGKey(1))
+save_svg(
+    single_state,
+    "round.svg",
+    tile_style="bilingual",  # default is "standard"
+)
 ```
 
 ## User interface
@@ -115,8 +124,8 @@ Currently, MahJax supports the following rules:
 
 | Rule | id | Status | Code | Speed (steps/sec) |
 |------|------|--------|------|--------|
-| No-Red Mahjong | `no_red_mahjong` | ✅ | [no_red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/no_red_mahjong) | ~1.6M |
-| Red Mahjong | `red_mahjong` | ✅ | [red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/red_mahjong) | ~9M |
+| No-Red Mahjong | `no_red_mahjong` | ✅ | [no_red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/no_red_mahjong) | ~2M |
+| Red Mahjong | `red_mahjong` | ✅ | [red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/red_mahjong) | ~1M |
 | Selective Rules | - | 🚧 | - | - |
 | 3-player Mahjong | - | 🚧 | - | - |
 
@@ -126,7 +135,7 @@ For the detailed rule specification, see the [official Tenhou rules](https://ten
 
 `no_red_mahjong` implements 4-player riichi mahjong without red fives.
 This variant is intentionally simplified for speed, and excludes some rules such as abortive draws (`特殊流局`), pao, and double ron.
-If throughput is your priority, `no_red_mahjong` is the recommended option.
+If throughput is your priority, `no_red_mahjong` is the recommended option (roughly 2x faster).
 
 You can configure the environment with:
 
@@ -137,7 +146,7 @@ You can configure the environment with:
 
 ```python
 env = mahjax.make(
-    id="red_mahjong",
+    "red_mahjong",
     round_mode="single",
     observe_type="dict",
     order_points=[30, 10, -10, -30],
@@ -163,7 +172,7 @@ JAX-based environments
 Paper coming soon.
 
 ## Acknowledgement
-- [sotetsuk](https://github.com/sotetsuk): For general advice on the development of mahjax based on his experience developing pgx.
+- [sotetsuk](https://github.com/sotetsuk): For general advice on the development of MahJax based on his experience developing pgx.
 - [habara-k](https://github.com/habara-k): For developing core JAX components such as shanten and Yaku calculation.
 - [OkanoShinri](https://github.com/OkanoShinri): For the initial implementation of MahJax and its SVG visualization.
-- [easonyu0203](easonyu0203): For advice on PPO implementation in a multi-player imperfect-information game.
+- [easonyu0203](https://github.com/easonyu0203): For advice on PPO implementation in a multi-player imperfect-information game.

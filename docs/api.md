@@ -8,7 +8,7 @@ pip install mahjax
 
 ## Usage
 
-We follow almost the same API as [pgx](https://github.com/sotetsuk/pgx). Below is the example of usage of mahjax.
+We follow almost the same API as [pgx](https://github.com/sotetsuk/pgx). Below is an example of MahJax usage.
 
 ```py
 import jax
@@ -62,7 +62,7 @@ Both `no_red_mahjong` and `red_mahjong` share the same nested state layout. The 
 | `legal_action_mask` | `(num_actions,)` | `bool` | Legal action mask for `current_player`. At terminal states this is set to all-`True` to avoid zero-division when normalizing action probabilities. |
 | `rewards` | `(4,)` | `float32` | 4-player reward vector for the **step that just ran**. Mahjong rewards are score deltas in hundreds of points (e.g. ron payments, tsumo payments, tenpai/noten settlement, illegal-action penalty). Zero in steps that produced no scoring event. |
 | `terminated` | `()` | `bool` | Game terminal. `True` once for the step that ends the game; remains `True` afterwards. After it goes `True`, subsequent `env.step` calls return the state unchanged with zero rewards. |
-| `truncated` | `()` | `bool` | Reserved for external truncation wrappers (e.g. `TimeLimit`). Mahjax does not itself produce truncated episodes. |
+| `truncated` | `()` | `bool` | Reserved for external truncation wrappers (e.g. `TimeLimit`). MahJax does not itself produce truncated episodes. |
 | `step_count` | `()` | `int32` | Total `env.step` calls applied so far. |
 | `players` | nested | `PlayerStateArrays` | Per-player arrays — see below. |
 | `round_state` | nested | `RoundState` | Round-level arrays — see below. |
