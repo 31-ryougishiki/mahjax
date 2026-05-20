@@ -89,10 +89,9 @@ state = step_fn(state, action, rngs)
 obs = obs_fn(state)
 
 # Visualize
-single_state = env.init(jax.random.PRNGKey(1))
 save_svg(
-    single_state,
-    "round.svg",
+    state,
+    "state.svg",
     tile_style="bilingual",  # default is "standard"
 )
 ```
