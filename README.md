@@ -84,6 +84,12 @@ rng, subrng = jax.random.split(rng)
 rngs = jax.random.split(subrng, batch_size)
 action = jnp.zeros((batch_size,), dtype=jnp.int8)
 state = step_fn(state, action, rngs)
+
+# Visualize
+save_svg(
+    state,
+    tile_style="bilingual", # default is "standard".
+)
 ```
 
 ## User interface
