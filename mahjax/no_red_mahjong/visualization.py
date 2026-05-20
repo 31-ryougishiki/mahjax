@@ -16,7 +16,7 @@ from mahjax.red_mahjong.visualization import (
 
 from .state import State
 
-Language = Literal["ja", "en"]
+TileStyle = Literal["standard", "bilingual"]
 
 
 _SHARED_PLAYER_FIELDS = (
@@ -106,13 +106,13 @@ def render_round_svg(
     state: State,
     show_all_hands: bool = True,
     visible_player: int = 0,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> str:
     return render_red_round_svg(
         to_red_visual_state(state),
         show_all_hands=show_all_hands,
         visible_player=visible_player,
-        language=language,
+        tile_style=tile_style,
     )
 
 
@@ -121,14 +121,14 @@ def save_svg(
     filename: str | Path,
     show_all_hands: bool = True,
     visible_player: int = 0,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> None:
     Path(filename).write_text(
         render_round_svg(
             state,
             show_all_hands=show_all_hands,
             visible_player=visible_player,
-            language=language,
+            tile_style=tile_style,
         ),
         encoding="utf-8",
     )
@@ -139,14 +139,14 @@ def render_svg_animation(
     frame_duration_seconds: float = 0.2,
     show_all_hands: bool = True,
     visible_player: int = 0,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> str:
     return render_red_svg_animation(
         [to_red_visual_state(state) for state in states],
         frame_duration_seconds=frame_duration_seconds,
         show_all_hands=show_all_hands,
         visible_player=visible_player,
-        language=language,
+        tile_style=tile_style,
     )
 
 
@@ -156,7 +156,7 @@ def save_svg_animation(
     frame_duration_seconds: float = 0.2,
     show_all_hands: bool = True,
     visible_player: int = 0,
-    language: Language = "ja",
+    tile_style: TileStyle = "standard",
 ) -> None:
     Path(filename).write_text(
         render_svg_animation(
@@ -164,7 +164,7 @@ def save_svg_animation(
             frame_duration_seconds=frame_duration_seconds,
             show_all_hands=show_all_hands,
             visible_player=visible_player,
-            language=language,
+            tile_style=tile_style,
         ),
         encoding="utf-8",
     )

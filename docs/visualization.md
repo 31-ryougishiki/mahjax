@@ -15,7 +15,7 @@ The quickest path is:
 2. initialize a state
 3. call `mahjax.save_svg(...)`
 
-### Japanese tiles
+### Standard tiles
 
 ```python
 import jax
@@ -24,10 +24,10 @@ import mahjax
 env = mahjax.make("no_red_mahjong")
 state = env.init(jax.random.PRNGKey(0))
 
-mahjax.save_svg(state, "round-ja.svg", language="ja")
+mahjax.save_svg(state, "round-standard.svg")
 ```
 
-### English tiles
+### Bilingual tiles
 
 ```python
 import jax
@@ -36,17 +36,17 @@ import mahjax
 env = mahjax.make("no_red_mahjong")
 state = env.init(jax.random.PRNGKey(0))
 
-mahjax.save_svg(state, "round-en.svg", language="en")
+mahjax.save_svg(state, "round-bilingual.svg", tile_style="bilingual")
 ```
 
-The `language` switch changes the tile art, so `en` is useful when your audience does not read kanji.
+The `tile_style` switch changes the tile art. Use `tile_style="bilingual"` when your audience does not read kanji.
 
 ## 2. Save an SVG animation
 
 `save_svg_animation(...)` takes a list of states.
 The simplest way to build that list is to run the environment step by step and append every intermediate state.
 
-### Japanese tiles
+### Standard tiles
 
 ```python
 import jax
@@ -66,13 +66,12 @@ for _ in range(40):
 
 mahjax.save_svg_animation(
     history,
-    "round-ja-animation.svg",
+    "round-standard-animation.svg",
     frame_duration_seconds=0.4,
-    language="ja",
 )
 ```
 
-### English tiles
+### Bilingual tiles
 
 ```python
 import jax
@@ -92,9 +91,9 @@ for _ in range(40):
 
 mahjax.save_svg_animation(
     history,
-    "round-en-animation.svg",
+    "round-bilingual-animation.svg",
     frame_duration_seconds=0.4,
-    language="en",
+    tile_style="bilingual",
 )
 ```
 
@@ -106,8 +105,8 @@ With `show_all_hands=False`, every player other than `visible_player` is drawn f
 ```python
 mahjax.save_svg(
     state,
-    "round-en.svg",
-    language="en",
+    "round-bilingual.svg",
+    tile_style="bilingual",
     show_all_hands=False,
     visible_player=0,
 )
@@ -120,8 +119,8 @@ The default is `show_all_hands=True` (all hands revealed), so existing code is u
 For notebooks and quick experiments, the `State` object also exposes SVG helpers:
 
 ```python
-svg_text = state.to_svg(language="en")
-state.save_svg("snapshot.svg", language="ja")
+svg_text = state.to_svg(tile_style="bilingual")
+state.save_svg("snapshot.svg")
 ```
 
 This is convenient when you already have a state in memory and do not need the top-level helper.
@@ -130,21 +129,21 @@ This is convenient when you already have a state in memory and do not need the t
 
 MahJax already includes sample animations in both tile styles.
 
-| Japanese tiles | English tiles |
+| Standard tiles | Bilingual tiles |
 | --- | --- |
-| ![Japanese tile animation](assets/red_mahjong_random_ja.gif) | ![English tile animation](assets/red_mahjong_random_en.gif) |
+| ![Standard tile animation](assets/red_mahjong_random_ja.gif) | ![Bilingual tile animation](assets/red_mahjong_random_en.gif) |
 
 These examples are useful when you want to:
 
 - show the same round state to Japanese and non-Japanese readers
 - prepare documentation for users who do not know the kanji tile faces
-- compare how readable your examples are in `ja` and `en`
+- compare how readable your examples are with `standard` and `bilingual` tiles
 
 ## 6. Practical notes
 
 - The output of `save_svg_animation(...)` is an **animated SVG**, not a GIF or MP4.
 - The same visualization API works for both `no_red_mahjong` and `red_mahjong`.
 - `frame_duration_seconds` controls playback speed.
-- For riichi mahjong in MahJax, `language="en"` is the switch you want for non-kanji readers.
+- For riichi mahjong in MahJax, `tile_style="bilingual"` is the switch you want for non-kanji readers.
 
 For a beginner-facing explanation of the tile set itself, see [Mahjong Basics](mahjong-basics.md).

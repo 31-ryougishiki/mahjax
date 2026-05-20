@@ -25,7 +25,7 @@
 
 ## Overview
 
-- 🚀 **Vectorized Environment:** Extremely fast (approx. **1.6M steps/sec** on 8x A100 GPUs).
+- 🚀 **Vectorized Environment:** Extremely fast (approx. **2M steps/sec** on 8x A100 GPUs).
 - 🎨 **Rich Visualization:** SVG-based visualization with bilingual support **for those unfamiliar with Kanji**.
 - 🎮 **Playable Interface:** A web-based UI allows you to play directly against the agents you train.
 - 📚 **RL Examples:** Simple examples for Behavior Cloning + PPO in the [`examples/`](https://github.com/nissymori/mahjax/tree/main/examples).
@@ -57,6 +57,7 @@ We basically follow the [Pgx](https://github.com/sotetsuk/pgx) API design.
 import jax
 import jax.numpy as jnp
 import mahjax
+from mahjax import save_svg
 
 batch_size = 10
 rng = jax.random.PRNGKey(0)
@@ -83,9 +84,6 @@ rng, subrng = jax.random.split(rng)
 rngs = jax.random.split(subrng, batch_size)
 action = jnp.zeros((batch_size,), dtype=jnp.int8)
 state = step_fn(state, action, rngs)
-
-# Get observation
-obs = obs_fn(state)
 ```
 
 ## User interface
@@ -126,8 +124,8 @@ Currently, MahJax supports the following rules:
 
 | Rule | id | Status | Code | Speed (steps/sec) |
 |------|------|--------|------|--------|
-| No-Red Mahjong | `no_red_mahjong` | ✅ | [no_red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/no_red_mahjong) | ~1.6M |
-| Red Mahjong | `red_mahjong` | ✅ | [red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/red_mahjong) | ~9M |
+| No-Red Mahjong | `no_red_mahjong` | ✅ | [no_red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/no_red_mahjong) | ~2M |
+| Red Mahjong | `red_mahjong` | ✅ | [red_mahjong](https://github.com/nissymori/mahjax/tree/main/mahjax/mahjax/red_mahjong) | ~1M |
 | Selective Rules | - | 🚧 | - | - |
 | 3-player Mahjong | - | 🚧 | - | - |
 
@@ -137,7 +135,7 @@ For the detailed rule specification, see the [official Tenhou rules](https://ten
 
 `no_red_mahjong` implements 4-player riichi mahjong without red fives.
 This variant is intentionally simplified for speed, and excludes some rules such as abortive draws (`特殊流局`), pao, and double ron.
-If throughput is your priority, `no_red_mahjong` is the recommended option.
+If throughput is your priority, `no_red_mahjong` is the recommended option (roughly 2x faster).
 
 You can configure the environment with:
 

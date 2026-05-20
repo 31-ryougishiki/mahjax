@@ -586,13 +586,13 @@ class GameSession:
             red_state,
             show_all_hands=reveal_all_hands,
             visible_player=0,
-            language="ja",
+            tile_style="standard",
         )
         svg_english = render_round_svg(
             red_state,
             show_all_hands=reveal_all_hands,
             visible_player=0,
-            language="en",
+            tile_style="bilingual",
         )
         legal_view = None
         advance_view: Optional[Dict[str, Any]] = None
@@ -656,13 +656,13 @@ class GameSession:
             oriented,
             show_all_hands=reveal_all_hands,
             visible_player=0,
-            language="ja",
+            tile_style="standard",
         )
         svg_en = render_round_svg(
             oriented,
             show_all_hands=reveal_all_hands,
             visible_player=0,
-            language="en",
+            tile_style="bilingual",
         )
         legal_view = None
         advance_view: Optional[Dict[str, Any]] = None

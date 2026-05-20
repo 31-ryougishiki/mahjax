@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import abc
-import warnings
 from typing import Literal, Optional, Tuple, get_args
 
 import jax
@@ -84,8 +83,7 @@ class State(abc.ABC):
         *,
         color_theme: Optional[Literal["light", "dark"]] = None,
         scale: Optional[float] = None,
-        language: Literal["ja", "en"] = "ja",
-        use_english: bool = False,
+        tile_style: Literal["standard", "bilingual"] = "standard",
     ) -> str:
         """Return SVG string. Useful for visualization in notebook.
 
@@ -103,17 +101,15 @@ class State(abc.ABC):
                 from mahjax.no_red_mahjong.visualization import render_round_svg
 
             del color_theme, scale
-            if use_english:
-                language = "en"
             return render_round_svg(
                 self,
                 show_all_hands=True,
-                language=language,
+                tile_style=tile_style,
             )
 
         from mahjax._src.visualizer import Visualizer
         v = Visualizer(color_theme=color_theme, scale=scale)
-        return v.get_dwg(states=self, use_english=use_english).tostring()
+        return v.get_dwg(states=self).tostring()
 
     def save_svg(
         self,
@@ -121,8 +117,7 @@ class State(abc.ABC):
         *,
         color_theme: Optional[Literal["light", "dark"]] = None,
         scale: Optional[float] = None,
-        language: Literal["ja", "en"] = "ja",
-        use_english: bool = False,
+        tile_style: Literal["standard", "bilingual"] = "standard",
     ) -> None:
         """Save the entire state (not observation) to a file.
         The filename must end with `.svg`
@@ -141,8 +136,7 @@ class State(abc.ABC):
             filename,
             color_theme=color_theme,
             scale=scale,
-            language=language,
-            use_english=use_english,
+            tile_style=tile_style,
         )
 
 

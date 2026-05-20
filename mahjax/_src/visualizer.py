@@ -23,7 +23,7 @@ import svgwrite  # type: ignore
 from mahjax.core import State
 
 ColorTheme = Literal["light", "dark"]
-Language = Literal["ja", "en"]
+TileStyle = Literal["standard", "bilingual"]
 
 
 @dataclass
@@ -96,7 +96,6 @@ class Visualizer:
     def get_dwg(
         self,
         states,
-        use_english=False,
     ):
         try:
             SIZE = len(states.current_player)
@@ -112,7 +111,7 @@ class Visualizer:
             WIDTH = 1
             HEIGHT = 1
 
-        self._set_config_by_state(states, use_english=use_english)
+        self._set_config_by_state(states)
         assert self._make_dwg_group is not None
 
         GRID_SIZE = self.config["GRID_SIZE"]
@@ -189,8 +188,7 @@ class Visualizer:
         dwg.add(group)
         return dwg
 
-    def _set_config_by_state(self, _state: State, use_english=False):  # noqa: C901
-        del use_english
+    def _set_config_by_state(self, _state: State):  # noqa: C901
         raise NotImplementedError(
             "DWG-based board renderer is removed for mahjong. Use SVG-based renderer via state.to_svg()/save_svg()."
         )
@@ -226,13 +224,10 @@ def save_svg(
     *,
     color_theme: Optional[Literal["light", "dark"]] = None,
     scale: Optional[float] = None,
-    language: Language = "ja",
-    use_english: bool = False,
+    tile_style: TileStyle = "standard",
     show_all_hands: bool = True,
     visible_player: int = 0,
 ) -> None:
-    if use_english:
-        language = "en"
     backend = _mahjong_svg_backend(state.env_id)
     if backend is not None:
         backend.save_svg(
@@ -240,11 +235,11 @@ def save_svg(
             filename,
             show_all_hands=show_all_hands,
             visible_player=visible_player,
-            language=language,
+            tile_style=tile_style,
         )
         return
     v = Visualizer(color_theme=color_theme, scale=scale)
-    v.get_dwg(states=state, use_english=use_english).saveas(filename)
+    v.get_dwg(states=state).saveas(filename)
 
 
 def save_svg_animation(
@@ -254,13 +249,10 @@ def save_svg_animation(
     color_theme: Optional[Literal["light", "dark"]] = None,
     scale: Optional[float] = None,
     frame_duration_seconds: Optional[float] = None,
-    language: Language = "ja",
-    use_english: bool = False,
+    tile_style: TileStyle = "standard",
     show_all_hands: bool = True,
     visible_player: int = 0,
 ) -> None:
-    if use_english:
-        language = "en"
     backend = _mahjong_svg_backend(states[0].env_id)
     if backend is not None:
         backend.save_svg_animation(
@@ -270,7 +262,7 @@ def save_svg_animation(
             or global_config.frame_duration_seconds,
             show_all_hands=show_all_hands,
             visible_player=visible_player,
-            language=language,
+            tile_style=tile_style,
         )
         return
     v = Visualizer(color_theme=color_theme, scale=scale)
@@ -281,7 +273,7 @@ def save_svg_animation(
     frame_groups = []
     dwg = None
     for i, state in enumerate(states):
-        dwg = v.get_dwg(states=state, use_english=use_english)
+        dwg = v.get_dwg(states=state)
         assert (
             len([e for e in dwg.elements if type(e) is svgwrite.container.Group]) == 1
         ), "Drawing must contain only one group"
