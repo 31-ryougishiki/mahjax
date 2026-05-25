@@ -390,7 +390,7 @@ def render_round_svg(
     tile_style: TileStyle = "standard",
 ) -> str:
     language = _tile_style_to_language(tile_style)
-    dora = [int(tile) for tile in jnp.asarray(state.round_state.dora_indicators) if int(tile) >= 0][:4]
+    dora = [int(tile) for tile in jnp.asarray(state.round_state.dora_indicators) if int(tile) >= 0][:5]
     round_index = int(state.round_state.round)
     if language == "ja":
         round_label = f"{_ROUND_WIND_LABELS[language][round_index // 4]}{round_index % 4 + 1}局"

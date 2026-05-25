@@ -133,7 +133,7 @@ The returned dictionary contains:
 | `kyotaku` | `()` | Riichi stick count. |
 | `prevalent_wind` | `()` | Prevailing wind. |
 | `seat_wind` | `()` | Current player's seat wind. |
-| `dora_indicators` | `(4,)` | Dora indicator tile **types** in `[0, 33]`; missing entries are `-1`. |
+| `dora_indicators` | `(5,)` | Dora indicator tiles in `[0, 36]` (red-aware); missing entries are `-1`. |
 
 ### Action History
 

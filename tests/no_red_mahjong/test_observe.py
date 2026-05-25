@@ -78,7 +78,7 @@ class TestObserveDict(TestCase):
         self.assertEqual(obs["seat_wind"].item(), 2)
         np.testing.assert_array_equal(
             np.array(obs["dora_indicators"]),
-            np.array([0, 1, -1, -1], dtype=np.int32),
+            np.array([0, 1, -1, -1, -1], dtype=np.int32),
         )
 
     def test_action_history_relative_players(self):
