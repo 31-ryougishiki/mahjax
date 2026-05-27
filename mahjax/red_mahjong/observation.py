@@ -42,7 +42,7 @@ def _observe_dict(state: State) -> Dict:
     - kyotaku: (1,) The kyotaku number
     - round wind: (1,) The round wind [0-3]
     - seat wind: (1,) The seat wind [0-3]
-    - dora indicators: (4,) The dora indicators [0-36] (red-aware), -1 means no dora
+    - dora indicators: (5,) The dora indicators [0-36] (red-aware), -1 means no dora
     """
     c_p = state.current_player
     c_p_based_order = (jnp.arange(4) + c_p) % 4
@@ -71,7 +71,7 @@ def _observe_dict(state: State) -> Dict:
     # Keep red-aware [0-36]: a red five revealed as an indicator is dead, which is
     # information-bearing for remaining-aka availability and opponent value inference,
     # even though red/black does not change which tile is dora.
-    dora_indicators = state.round_state.dora_indicators[:4]  # (4,)
+    dora_indicators = state.round_state.dora_indicators[:5]  # (5,) Maximum 5 dora indicators
     return {
         "hand": hand_c_p_14,
         "last_draw": state.round_state.last_draw,
