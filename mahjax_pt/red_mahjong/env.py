@@ -556,7 +556,9 @@ class RedMahjong(Env):
         discarded_player = state.round_state.last_player
 
         hand = state.players.hand_with_red[cp]
-        fan, fu = self._safe_yaku(hand, True, cp, state)
+        yaku, fan, fu = Yaku.judge(hand, True, cp, state)
+        fan = int(fan) if isinstance(fan, torch.Tensor) else fan
+        fu = int(fu) if isinstance(fu, torch.Tensor) else fu
         state.players.has_yaku[cp, 1] = True
         state.players.fan[cp, 1] = fan
         state.players.fu[cp, 1] = fu
@@ -575,7 +577,9 @@ class RedMahjong(Env):
         """Handle a TSUMO (self-draw win) action."""
         cp = state.current_player
         hand = state.players.hand_with_red[cp]
-        fan, fu = self._safe_yaku(hand, False, cp, state)
+        yaku, fan, fu = Yaku.judge(hand, False, cp, state)
+        fan = int(fan) if isinstance(fan, torch.Tensor) else fan
+        fu = int(fu) if isinstance(fu, torch.Tensor) else fu
         state.players.has_yaku[cp, 0] = True
         state.players.fan[cp, 0] = fan
         state.players.fu[cp, 0] = fu
@@ -590,21 +594,10 @@ class RedMahjong(Env):
             self._finalize_game(state)
         return state
 
-    def _safe_yaku(self, hand, is_ron, cp, state):
-        """Call Yaku.judge with a fallback for incomplete PyTorch port."""
-        try:
-            yaku, fan, fu = Yaku.judge(hand, is_ron, cp, state)
-            fan = int(fan) if isinstance(fan, (torch.Tensor,)) else fan
-            fu = int(fu) if isinstance(fu, (torch.Tensor,)) else fu
-            return max(fan, 1), max(fu, 20)
-        except Exception:
-            # Fallback: assume a minimal 1-han 30-fu hand
-            return 1, 30
-
     def _settle_ron(self, state, winner, loser, fan, fu):
         """Settle payments for a ron win."""
-        fan = int(fan) if isinstance(fan, (torch.Tensor, np.generic)) else fan
-        fu = int(fu) if isinstance(fu, (torch.Tensor, np.generic)) else fu
+        fan = int(fan) if isinstance(fan, torch.Tensor) else fan
+        fu = int(fu) if isinstance(fu, torch.Tensor) else fu
         base = Yaku.score(fan, fu)
 
         dealer = state.round_state.dealer
