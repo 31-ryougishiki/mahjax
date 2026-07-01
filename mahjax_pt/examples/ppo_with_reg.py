@@ -109,22 +109,53 @@ class PPOBuffer:
         self.action_masks.append(mask)
 
     def get_batch(self):
-        """Return stacked tensors."""
-        B = self.num_envs
-        # Stack observations
-        stacked_obs = {}
-        for key in self.observations[0][0].keys():
-            arr = torch.stack([torch.stack([o[i][key] for i, o in enumerate(step_obs)])
-                               for step_obs in self.observations])
-            stacked_obs[key] = arr  # (T, B, ...)
+        """Return stacked tensors from buffer.
 
-        actions = torch.tensor(self.actions, dtype=torch.long)     # (T, B)
-        log_probs = torch.tensor(self.log_probs, dtype=torch.float32)
-        values = torch.tensor(self.values, dtype=torch.float32)
-        rewards = torch.stack(self.rewards)                        # (T, B, 4)
-        dones = torch.tensor(self.dones, dtype=torch.bool)
-        current_players = torch.tensor(self.current_players, dtype=torch.long)
-        masks = torch.stack(self.action_masks)                     # (T, B, N_actions)
+        observations: list[T] of list[B] of dict
+        actions:     list[T] of list[B] of int
+        log_probs:   list[T] of list[B] of float
+        values:      list[T] of list[B] of float
+        rewards:     list[T] of list[B] of (4,) tensor
+        dones:       list[T] of list[B] of bool
+        current_players: list[T] of list[B] of int or tensor
+        action_masks: list[T] of list[B] of (87,) tensor
+        """
+        T, B = self.num_steps, self.num_envs
+
+        # Observations → {key: (T, B, ...)}
+        keys = list(self.observations[0][0].keys())
+        stacked_obs = {}
+        for key in keys:
+            vals = []
+            for t in range(T):
+                step_vals = []
+                for b in range(B):
+                    v = self.observations[t][b][key]
+                    if not isinstance(v, torch.Tensor):
+                        v = torch.tensor(v)
+                    step_vals.append(v)
+                vals.append(torch.stack(step_vals))
+            stacked_obs[key] = torch.stack(vals)
+
+        def _stack_scalars(nested_list, dtype=torch.float32):
+            """Convert list[T][B] of scalars → (T, B) tensor."""
+            arr = torch.zeros(T, B, dtype=dtype)
+            for t in range(T):
+                for b in range(B):
+                    arr[t, b] = float(nested_list[t][b])
+            return arr
+
+        def _stack_tensors(nested_list):
+            """Convert list[T][B] of tensors → (T, B, ...) tensor."""
+            return torch.stack([torch.stack(row) for row in nested_list])
+
+        actions = _stack_scalars(self.actions, dtype=torch.long)
+        log_probs = _stack_scalars(self.log_probs, dtype=torch.float32)
+        values = _stack_scalars(self.values, dtype=torch.float32)
+        rewards = _stack_tensors(self.rewards)
+        dones = _stack_scalars(self.dones, dtype=torch.bool)
+        current_players = _stack_scalars(self.current_players, dtype=torch.long)
+        masks = _stack_tensors(self.action_masks)
 
         return stacked_obs, actions, log_probs, values, rewards, dones, current_players, masks
 

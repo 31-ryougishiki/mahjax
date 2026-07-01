@@ -81,19 +81,32 @@ class FeatureExtractor(nn.Module):
         )
         self.apply(orthogonal_init_)
 
-    def _ensure_batch_dim(self, x, base_ndim):
-        """Add a batch dim if missing."""
-        if isinstance(x, torch.Tensor):
-            if x.dim() == base_ndim:
-                return x.unsqueeze(0)
+    def _ensure_batch_dim(self, x, base_ndim, feature_dim=1):
+        """Return (B, feature_dim) or (B, D) tensor regardless of input shape.
+
+        base_ndim: expected non-batch dims.
+        feature_dim: size of the last dimension after batching (default 1 for scalars).
+        """
+        if not isinstance(x, torch.Tensor):
+            t = torch.tensor(x, dtype=torch.float32)
+            return t.view(1, feature_dim).expand(-1, feature_dim)
+
+        # Ensure float
+        if x.dtype not in (torch.float32, torch.float64):
+            x = x.to(torch.float32)
+
+        if x.dim() == 0:
+            # scalar tensor → (1, 1)
+            return x.view(1, 1)
+        elif x.dim() == base_ndim:
+            # Missing batch dim: (D,) → (1, D)
+            return x.view(1, -1)
+        elif x.dim() == base_ndim + 1 and base_ndim == 0:
+            # (B,) → (B, 1)
+            return x.view(-1, 1)
+        else:
+            # Already correct: (B, D)
             return x
-        # Scalar: wrap as (1,1) or (1,)
-        t = torch.tensor(x, dtype=torch.float32)
-        if base_ndim == 0:
-            return t.view(1, 1)
-        if base_ndim == 1:
-            return t.view(1, -1)
-        return t.view(1, -1)
 
     def forward(self, obs):
         # ── Hand ──

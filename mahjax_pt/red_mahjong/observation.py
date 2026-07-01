@@ -67,19 +67,21 @@ def _observe_dict(state: EnvState) -> Dict:
     action_history[0, :] = relative_player_history
 
     # Game features
-    shanten_c_p = state.round_state.shanten_current_player
-    furiten = state.players.furiten_by_discard[c_p] | state.players.furiten_by_pass[c_p]
+    shanten_c_p = torch.tensor(state.round_state.shanten_current_player, dtype=torch.int32)
+    furiten = torch.tensor(
+        bool(state.players.furiten_by_discard[c_p] | state.players.furiten_by_pass[c_p]),
+        dtype=torch.bool)
     scores = state.round_state.score[c_p_based_order]
-    round_num = state.round_state.round
-    honba = state.round_state.honba
-    kyotaku = state.round_state.kyotaku
-    prevalent_wind = int(state.round_state.round) // 4
-    seat_wind = int(state.round_state.seat_wind[c_p])
+    round_num = torch.tensor(int(state.round_state.round), dtype=torch.int32)
+    honba = torch.tensor(int(state.round_state.honba), dtype=torch.int32)
+    kyotaku = torch.tensor(int(state.round_state.kyotaku), dtype=torch.int32)
+    prevalent_wind = torch.tensor(int(state.round_state.round) // 4, dtype=torch.int32)
+    seat_wind = torch.tensor(int(state.round_state.seat_wind[c_p]), dtype=torch.int32)
     dora_indicators = state.round_state.dora_indicators[:5]  # (5,)
 
     return {
         "hand": hand_c_p_14,
-        "last_draw": state.round_state.last_draw,
+        "last_draw": torch.tensor(state.round_state.last_draw, dtype=torch.int32),
         "action_history": action_history,
         "shanten_count": shanten_c_p,
         "furiten": furiten,

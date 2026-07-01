@@ -49,12 +49,17 @@ class MultiHeadSelfAttention(nn.Module):
         attn_weights = (q @ k.transpose(-2, -1)) / self.scale  # (B, H, T, T)
 
         if mask is not None:
-            # mask: (B, T) → (B, 1, 1, T) for broadcasting
             if mask.dim() == 2:
-                mask = mask[:, None, None, :]
-            attn_weights = attn_weights.masked_fill(mask == 0, float('-inf'))
+                attn_mask = mask[:, None, None, :]  # (B, 1, 1, T)
+            else:
+                attn_mask = mask
+            attn_weights = attn_weights.masked_fill(attn_mask == 0, float('-inf'))
 
+        # Stable softmax: clamp extreme values to avoid NaN from all -inf rows
+        attn_weights = torch.clamp(attn_weights, min=-1e9, max=1e9)
         attn = F.softmax(attn_weights, dim=-1)
+        # Replace NaN (all-masked rows) with zeros
+        attn = torch.nan_to_num(attn, nan=0.0)
         out = attn @ v  # (B, H, T, D)
         out = out.permute(0, 2, 1, 3).contiguous().view(B, T, C)
         return self.out_proj(out)

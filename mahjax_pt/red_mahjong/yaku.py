@@ -24,14 +24,14 @@ def _load_yaku_cache():
             return torch.from_numpy(data["data"].astype(np.int64))
 
 
-WIND_TILE = torch.tensor([27, 28, 29, 30], dtype=torch.int8)
-OUTSIDE_TILE = torch.tensor([0, 8, 9, 17, 18, 26], dtype=torch.int8)
+WIND_TILE = torch.tensor([27, 28, 29, 30], dtype=torch.long)
+OUTSIDE_TILE = torch.tensor([0, 8, 9, 17, 18, 26], dtype=torch.long)
 TANYAO_TILE = torch.tensor(
     [1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25],
-    dtype=torch.int8,
+    dtype=torch.long,
 )
-KOKUSHI_TILE = torch.tensor([0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33], dtype=torch.int8)
-ALL_GREEN_TILE = torch.tensor([19, 20, 21, 23, 25, 32], dtype=torch.int8)
+KOKUSHI_TILE = torch.tensor([0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33], dtype=torch.long)
+ALL_GREEN_TILE = torch.tensor([19, 20, 21, 23, 25, 32], dtype=torch.long)
 SCORES = torch.tensor(
     [2000, 2000, 3000, 3000, 4000, 4000, 4000, 6000, 6000, 8000, 8000, 8000],
     dtype=torch.int32,
@@ -189,32 +189,37 @@ class Yaku:
     MAX_PATTERNS = _Internal.MAX_PATTERNS
 
     @staticmethod
+    def _cache_row(code):
+        """Return cache row for pattern 0 (best).  CACHE shape: (N, 3)."""
+        return int(Yaku.CACHE[code, 0].item())
+
+    @staticmethod
     def head(code):
-        return int(Yaku.CACHE[code].item()) & 0b1111
+        return Yaku._cache_row(code) & 0b1111
 
     @staticmethod
     def chow(code):
-        return (int(Yaku.CACHE[code].item()) >> 4) & 0b1111111
+        return (Yaku._cache_row(code) >> 4) & 0b1111111
 
     @staticmethod
     def pung(code):
-        return (int(Yaku.CACHE[code].item()) >> 11) & 0b111111111
+        return (Yaku._cache_row(code) >> 11) & 0b111111111
 
     @staticmethod
     def n_pung(code):
-        return (int(Yaku.CACHE[code].item()) >> 20) & 0b111
+        return (Yaku._cache_row(code) >> 20) & 0b111
 
     @staticmethod
     def n_double_chow(code):
-        return (int(Yaku.CACHE[code].item()) >> 23) & 0b11
+        return (Yaku._cache_row(code) >> 23) & 0b11
 
     @staticmethod
     def outside(code):
-        return (int(Yaku.CACHE[code].item()) >> 25) & 1
+        return (Yaku._cache_row(code) >> 25) & 1
 
     @staticmethod
     def nine_gates(code):
-        return int(Yaku.CACHE[code].item()) >> 26
+        return Yaku._cache_row(code) >> 26
 
     @staticmethod
     def is_pure_straight(chow):
@@ -371,9 +376,9 @@ class Yaku:
             dtype=torch.bool)
 
         meld_chow_bits = reduce(operator.or_,
-            [int(Meld.chow(melds[i]).item()) for i in range(melds.shape[0])], 0)
+            [int(Meld.chow(melds[i])) for i in range(melds.shape[0])], 0)
         meld_pung_bits = reduce(operator.or_,
-            [int(Meld.suited_pung(melds[i]).item()) for i in range(melds.shape[0])], 0)
+            [int(Meld.suited_pung(melds[i])) for i in range(melds.shape[0])], 0)
 
         all_chow = torch.full((Yaku.MAX_PATTERNS,), meld_chow_bits, dtype=torch.int32)
         all_pung = torch.full((Yaku.MAX_PATTERNS,), meld_pung_bits, dtype=torch.int32)
@@ -402,7 +407,7 @@ class Yaku:
 
         fu = torch.full((Yaku.MAX_PATTERNS,),
             2 * (not is_ron_int)
-            + sum(int(Meld.fu(melds[i]).item()) for i in range(melds.shape[0]))
+            + sum(int(Meld.fu(melds[i])) for i in range(melds.shape[0]))
             + wind_pair_fu
             + 2 * int(bool((hand[31:] == 2).any().item()))
             + int(sum(int(hand[i].item() == 3) * 4 * (2 - int(ron_penalty)) for i in range(27, 34)))
