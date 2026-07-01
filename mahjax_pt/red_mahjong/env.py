@@ -499,6 +499,10 @@ class RedMahjong(Env):
                 if Hand.can_chi(hand, target, a):
                     m[a] = True
 
+            # PASS is always legal if any meld/ron action is available
+            if m.any():
+                m[Action.PASS] = True
+
             # Double ron check
             if state.round_state.terminated_round and m[Action.RON]:
                 # A ron has already been declared on this discard
@@ -741,7 +745,7 @@ class RedMahjong(Env):
 
         # Set furiten_by_pass for players who passed on a ron chance
         for p in range(4):
-            if p != cp and state.legal_action_mask[p, Action.RON]:
+            if p != cp and state.players.legal_action_mask[p, Action.RON]:
                 state.players.furiten_by_pass[p] = True
 
         # Find next player with a valid meld/ron action

@@ -52,6 +52,15 @@ def train_bc(
     obs_data = {k: v.to(device) for k, v in data["observation"].items()}
     act_data = torch.tensor(data["action"], dtype=torch.long, device=device)
     mask_data = data["legal_action_mask"].to(device)
+
+    # Filter: remove samples where action is not in the legal mask
+    valid = mask_data[torch.arange(mask_data.shape[0]), act_data]
+    n_bad = (~valid).sum().item()
+    if n_bad > 0:
+        print(f"  Filtering out {n_bad} bad samples (action not in legal mask)")
+        obs_data = {k: v[valid] for k, v in obs_data.items()}
+        act_data = act_data[valid]
+        mask_data = mask_data[valid]
     num_samples = act_data.shape[0]
 
     # 2. Train/Val split
@@ -66,7 +75,7 @@ def train_bc(
     # 3. Init model
     net_cls = get_network_cls(env_name)
     model = net_cls().to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
     torch.manual_seed(seed)
 
     steps_per_epoch = len(train_idx) // batch_size

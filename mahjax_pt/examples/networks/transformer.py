@@ -10,14 +10,22 @@ import torch.nn.functional as F
 
 
 def orthogonal_init_(module, scale=None):
-    """Pytorch-style orthogonal initialization."""
+    """Pytorch-style orthogonal initialization matching Flax orthogonal_init.
+
+    Flax: nn.initializers.orthogonal(scale) — scale is the gain for 2D weights,
+    and 1D weights get std=scale (JAX default is scale=sqrt(2) ≈ 1.414).
+
+    PyTorch: nn.init.orthogonal_(w, gain=scale) — gain is the scale factor.
+    1D weights: nn.init.normal_(w, std=scale).
+    """
+    gain = scale if scale is not None else math.sqrt(2.0)
     if not hasattr(module, 'weight'):
         return
     w = module.weight
     if w.ndim >= 2:
-        nn.init.orthogonal_(w)
+        nn.init.orthogonal_(w, gain=gain)
     elif w.ndim == 1:
-        nn.init.normal_(w, std=1.0)
+        nn.init.normal_(w, std=gain)
     if hasattr(module, 'bias') and module.bias is not None:
         nn.init.constant_(module.bias, 0.0)
 

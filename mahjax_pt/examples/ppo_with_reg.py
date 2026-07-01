@@ -216,7 +216,7 @@ def train_ppo(
         baseline_net = None
         magnet_net = None
 
-    optimizer = torch.optim.AdamW(network.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(network.parameters(), lr=lr, eps=1e-5, weight_decay=0.0)
 
     # Env init
     gen = torch.Generator().manual_seed(seed)
@@ -266,14 +266,14 @@ def train_ppo(
                 next_s = step_fn(s, int(action.item()), g)
 
                 reward = next_s.rewards.clone() / MAX_REWARD
-                next_done = next_s.terminated or next_s.truncated
 
                 states[i] = next_s
                 actions.append(int(action.item()))
                 log_probs_b.append(float(log_prob.item()))
                 values_b.append(float(value.item()))
                 rewards_b.append(reward)
-                dones_b.append(done or next_done)
+                # Only mark as done on the step AFTER terminal (pre-step terminated=True), matching JAX is_new_episode
+                dones_b.append(bool(done))
                 cps.append(cp)
                 masks_b.append(mask.cpu())
 
@@ -290,6 +290,13 @@ def train_ppo(
         obs_stack, acts, log_probs, values, rewards, dones, cps, masks = buffer.get_batch()
         advantages, targets, valid_mask = compute_gae(
             rewards, values, dones, cps, gamma, gae_lambda)
+
+        # Advantage normalization (matching JAX process_trajectory)
+        # Whitens advantages to zero-mean, unit-variance using only valid entries
+        vf = valid_mask.float()
+        adv_mean = (advantages * vf).sum() / vf.sum().clamp(min=1.0)
+        adv_var = ((advantages - adv_mean) ** 2 * vf).sum() / vf.sum().clamp(min=1.0)
+        advantages = (advantages - adv_mean) / (adv_var.sqrt() + 1e-8)
 
         # Flatten
         T, B = num_steps, num_envs
@@ -356,7 +363,6 @@ def train_ppo(
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(network.parameters(), 0.5)
                 optimizer.step()
 
         # ── Logging ──

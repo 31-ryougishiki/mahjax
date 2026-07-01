@@ -186,13 +186,21 @@ def collect_data(
 
         returns = returns / max_reward
 
-        # Flatten & store
+        # Flatten & store (skip samples where action is not in mask)
+        skipped = 0
         for b in range(B):
             for t in range(T):
+                mask = mask_seq[t][b]
+                action = act_seq[t][b]
+                if not mask[action]:
+                    skipped += 1
+                    continue
                 data_obs.append(obs_seq[t][b])
-                data_act.append(act_seq[t][b])
-                data_mask.append(mask_seq[t][b])
+                data_act.append(action)
+                data_mask.append(mask)
                 data_ret.append(returns[t, b])
+        if skipped > 0:
+            logger.warning(f"  Skipped {skipped} bad samples (action not in legal mask)")
 
         total_steps += T * B
 
