@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""PPO + Magnet regularization trainer (PyTorch port).
+
+Ported from examples/ppo_with_reg.py.
+"""
+
+import os
+import sys
+import time
+import pickle
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
+from mahjax_pt.red_mahjong.env import make as make_env
+from mahjax_pt.red_mahjong.auto_reset_wrapper import auto_reset
+from mahjax_pt.red_mahjong.players import rule_based_player
+from mahjax_pt.examples.common import (
+    default_bc_params_path,
+    default_rl_params_path,
+    get_network_cls,
+)
+
+MAX_REWARD = 320.0
+NEG = -1e9
+
+
+def masked_mean(x, mask):
+    """Compute mean over entries where mask is True."""
+    denom = mask.float().sum().clamp(min=1.0)
+    return (x * mask.float()).sum() / denom
+
+
+def compute_gae(rewards, values, dones, current_players, gamma=1.0, gae_lambda=0.95):
+    """Compute GAE with per-player reward accumulators (turn-based MARL).
+
+    rewards:  (T, B, 4) — 4-player reward vector
+    values:   (T, B)    — value estimate for the acting player
+    dones:    (T, B)    — episode boundary flags
+    current_players: (T, B) — which player acted at each step
+    """
+    T, B, P = rewards.shape
+    advantages = torch.zeros(T, B, P)
+    targets = torch.zeros(T, B, P)
+    valid_mask = torch.zeros(T, B, P, dtype=torch.bool)
+
+    for b in range(B):
+        gae = torch.zeros(P)
+        next_value = torch.zeros(P)
+        reward_accum = torch.zeros(P)
+        has_next_value = torch.zeros(P, dtype=torch.bool)
+        next_valid = torch.zeros(P, dtype=torch.bool)
+
+        for t in reversed(range(T)):
+            cp = int(current_players[t, b])
+            d = dones[t, b]
+
+            if d:
+                gae.zero_()
+                reward_accum.zero_()
+                has_next_value.zero_()
+                next_value.zero_()
+
+            reward_accum += rewards[t, b]
+            player_reward = reward_accum[cp].clone()
+            reward_accum[cp] = 0.0
+
+            td_error = player_reward + gamma * next_value[cp] * (1 - float(d)) - values[t, b]
+            new_gae = td_error + gamma * gae_lambda * gae[cp] * (1 - float(d))
+            gae[cp] = new_gae
+
+            is_valid = has_next_value[cp] or d or next_valid[cp]
+            advantages[t, b, cp] = new_gae if is_valid else 0.0
+            targets[t, b, cp] = (advantages[t, b, cp] + values[t, b]) if is_valid else values[t, b]
+            valid_mask[t, b, cp] = is_valid
+
+            next_value[cp] = values[t, b]
+            has_next_value[cp] = True
+            next_valid[cp] = is_valid or d
+
+    return advantages, targets, valid_mask
+
+
+class PPOBuffer:
+    def __init__(self, num_steps, num_envs):
+        self.num_steps = num_steps
+        self.num_envs = num_envs
+        self.reset()
+
+    def reset(self):
+        self.observations = []
+        self.actions = []
+        self.log_probs = []
+        self.values = []
+        self.rewards = []
+        self.dones = []
+        self.current_players = []
+        self.action_masks = []
+
+    def store(self, obs, action, log_prob, value, reward, done, cp, mask):
+        self.observations.append(obs)
+        self.actions.append(action)
+        self.log_probs.append(log_prob)
+        self.values.append(value)
+        self.rewards.append(reward)
+        self.dones.append(done)
+        self.current_players.append(cp)
+        self.action_masks.append(mask)
+
+    def get_batch(self):
+        """Return stacked tensors."""
+        B = self.num_envs
+        # Stack observations
+        stacked_obs = {}
+        for key in self.observations[0][0].keys():
+            arr = torch.stack([torch.stack([o[i][key] for i, o in enumerate(step_obs)])
+                               for step_obs in self.observations])
+            stacked_obs[key] = arr  # (T, B, ...)
+
+        actions = torch.tensor(self.actions, dtype=torch.long)     # (T, B)
+        log_probs = torch.tensor(self.log_probs, dtype=torch.float32)
+        values = torch.tensor(self.values, dtype=torch.float32)
+        rewards = torch.stack(self.rewards)                        # (T, B, 4)
+        dones = torch.tensor(self.dones, dtype=torch.bool)
+        current_players = torch.tensor(self.current_players, dtype=torch.long)
+        masks = torch.stack(self.action_masks)                     # (T, B, N_actions)
+
+        return stacked_obs, actions, log_probs, values, rewards, dones, current_players, masks
+
+
+def train_ppo(
+    env_name="red_mahjong",
+    round_mode="single",
+    seed=0,
+    num_envs=4,
+    num_steps=256,
+    total_timesteps=100_000,
+    gamma=1.0,
+    gae_lambda=0.95,
+    lr=3e-4,
+    ent_coef=0.01,
+    clip_eps=0.2,
+    vf_coef=0.5,
+    update_epochs=4,
+    minibatch_size=256,
+    mag_coef=0.2,
+    pretrained_model_path=None,
+    save_model=True,
+    eval_interval=10,
+    eval_num_envs=100,
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    if pretrained_model_path is None:
+        pretrained_model_path = default_bc_params_path(env_name)
+
+    # Environment
+    env = make_env(env_name, round_mode=round_mode, observe_type="dict")
+    step_fn = auto_reset(env.step, env.init)
+    NUM_PLAYERS = env.num_players
+    NUM_ACTIONS = env.num_actions
+    BATCH_SIZE = num_envs * num_steps
+
+    # Network
+    net_cls = get_network_cls(env_name)
+    network = net_cls().to(device)
+    torch.manual_seed(seed)
+
+    # Load BC params for both baseline and magnet
+    if os.path.exists(pretrained_model_path):
+        print(f"Loading BC params: {pretrained_model_path}")
+        network.load_state_dict(torch.load(pretrained_model_path, map_location=device))
+        baseline_net = net_cls().to(device)
+        baseline_net.load_state_dict(network.state_dict())
+        magnet_net = net_cls().to(device)
+        magnet_net.load_state_dict(network.state_dict())
+        for p in baseline_net.parameters():
+            p.requires_grad = False
+        for p in magnet_net.parameters():
+            p.requires_grad = False
+    else:
+        print(f"Warning: BC params not found at {pretrained_model_path}, training from scratch")
+        baseline_net = None
+        magnet_net = None
+
+    optimizer = torch.optim.AdamW(network.parameters(), lr=lr)
+
+    # Env init
+    gen = torch.Generator().manual_seed(seed)
+    states = []
+    for i in range(num_envs):
+        g = torch.Generator().manual_seed(seed + i + 1000)
+        states.append(env.init(g))
+
+    num_updates = total_timesteps // BATCH_SIZE
+    buffer = PPOBuffer(num_steps, num_envs)
+
+    for update_idx in range(num_updates):
+        buffer.reset()
+
+        # ── 1. Collect Rollout ──
+        network.eval()
+        for t in range(num_steps):
+            obs_batch = []
+            actions = []
+            log_probs_b = []
+            values_b = []
+            rewards_b = []
+            dones_b = []
+            cps = []
+            masks_b = []
+
+            for i in range(num_envs):
+                s = states[i]
+                obs = env.observe(s)
+                obs_batch.append(obs)
+                mask = s.legal_action_mask.to(device)
+                cp = s.current_player
+                done = s.terminated or s.truncated
+
+                # Move hand+action_history to device for network forward
+                obs_dev = {k: v.to(device) for k, v in obs.items()}
+                mask_dev = mask.to(device)
+                with torch.no_grad():
+                    logits, value = network(obs_dev)
+                    logits = torch.where(mask_dev, logits, torch.full_like(logits, NEG))
+                    dist = torch.distributions.Categorical(logits=logits)
+                    action = dist.sample()
+                    log_prob = dist.log_prob(action)
+
+                g = torch.Generator().manual_seed(
+                    seed + update_idx * 100000 + t * num_envs + i)
+                next_s = step_fn(s, int(action.item()), g)
+
+                reward = next_s.rewards.clone() / MAX_REWARD
+                next_done = next_s.terminated or next_s.truncated
+
+                states[i] = next_s
+                actions.append(int(action.item()))
+                log_probs_b.append(float(log_prob.item()))
+                values_b.append(float(value.item()))
+                rewards_b.append(reward)
+                dones_b.append(done or next_done)
+                cps.append(cp)
+                masks_b.append(mask.cpu())
+
+            buffer.observations.append(obs_batch)
+            buffer.actions.append(actions)
+            buffer.log_probs.append(log_probs_b)
+            buffer.values.append(values_b)
+            buffer.rewards.append(rewards_b)
+            buffer.dones.append(dones_b)
+            buffer.current_players.append(cps)
+            buffer.action_masks.append(masks_b)
+
+        # ── 2. GAE ──
+        obs_stack, acts, log_probs, values, rewards, dones, cps, masks = buffer.get_batch()
+        advantages, targets, valid_mask = compute_gae(
+            rewards, values, dones, cps, gamma, gae_lambda)
+
+        # Flatten
+        T, B = num_steps, num_envs
+        obs_flat = {k: v.reshape(T * B, *v.shape[2:]) for k, v in obs_stack.items()}
+        acts_flat = acts.reshape(-1)
+        log_probs_flat = log_probs.reshape(-1)
+        values_flat = values.reshape(-1)
+        advantages_flat = advantages.reshape(-1, NUM_PLAYERS)
+        targets_flat = targets.reshape(-1, NUM_PLAYERS)
+        valid_mask_flat = valid_mask.reshape(-1, NUM_PLAYERS)
+        masks_flat = masks.reshape(-1, NUM_ACTIONS)
+
+        # ── 3. PPO Update ──
+        network.train()
+        for epoch in range(update_epochs):
+            perm = torch.randperm(T * B)
+            for start in range(0, T * B, minibatch_size):
+                idx = perm[start:start + minibatch_size]
+
+                obs_mb = {k: v[idx].to(device) for k, v in obs_flat.items()}
+                act_mb = acts_flat[idx].to(device)
+                logp_old = log_probs_flat[idx].to(device)
+                adv_mb = advantages_flat[idx].to(device)
+                tgt_mb = targets_flat[idx].to(device)
+                vmask_mb = valid_mask_flat[idx].to(device)
+                amask_mb = masks_flat[idx].to(device)
+                val_old = values_flat[idx].to(device)
+
+                logits, values = network(obs_mb)
+                logits = torch.where(amask_mb, logits, torch.full_like(logits, NEG))
+                dist = torch.distributions.Categorical(logits=logits)
+                logp_new = dist.log_prob(act_mb)
+                entropy = dist.entropy()
+
+                ratio = torch.exp(logp_new - logp_old).unsqueeze(-1)
+                adv = adv_mb.gather(1, cps.reshape(-1, 1)[idx].to(device))
+                vmask = vmask_mb.gather(1, cps.reshape(-1, 1)[idx].to(device))
+
+                # PPO clip loss
+                ppo_loss = -masked_mean(
+                    torch.min(ratio * adv, torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * adv),
+                    vmask)
+
+                # Magnet KL regularization
+                mag_kl = 0.0
+                if magnet_net is not None and mag_coef > 0:
+                    with torch.no_grad():
+                        mag_logits, _ = magnet_net(obs_mb)
+                    mag_logits = torch.where(amask_mb, mag_logits, torch.full_like(mag_logits, NEG))
+                    mag_dist = torch.distributions.Categorical(logits=mag_logits)
+                    mag_kl = masked_mean(
+                        torch.distributions.kl.kl_divergence(dist, mag_dist).unsqueeze(-1), vmask)
+
+                # Critic loss
+                vt = values.unsqueeze(-1)
+                val_clipped = val_old.unsqueeze(-1) + torch.clamp(
+                    vt - val_old.unsqueeze(-1), -clip_eps, clip_eps)
+                tgt = tgt_mb.gather(1, cps.reshape(-1, 1)[idx].to(device))
+                loss_critic = 0.5 * vf_coef * masked_mean(
+                    torch.max((vt - tgt) ** 2, (val_clipped - tgt) ** 2), vmask)
+
+                loss = ppo_loss - ent_coef * masked_mean(entropy.unsqueeze(-1), vmask) \
+                    + mag_coef * mag_kl + loss_critic
+
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(network.parameters(), 0.5)
+                optimizer.step()
+
+        # ── Logging ──
+        avg_reward = rewards.mean().item() * MAX_REWARD
+        print(f"Update {update_idx + 1}/{num_updates} | "
+              f"avg_reward: {avg_reward:.2f} | "
+              f"loss: {loss.item():.4f} | "
+              f"entropy: {masked_mean(entropy.unsqueeze(-1), vmask).item():.4f}")
+
+    # Save final model
+    if save_model:
+        save_path = default_rl_params_path(env_name, seed)
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        torch.save(network.state_dict(), save_path)
+        print(f"Model saved to {save_path}")
+
+    return network
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--env_name", default="red_mahjong")
+    parser.add_argument("--round_mode", default="single")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--num_envs", type=int, default=4)
+    parser.add_argument("--num_steps", type=int, default=256)
+    parser.add_argument("--total_timesteps", type=int, default=100_000)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--pretrained_model_path", default=None)
+    args = parser.parse_args()
+    train_ppo(**vars(args))
