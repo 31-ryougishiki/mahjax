@@ -1209,34 +1209,49 @@ class RedMahjong(Env):
         is_tsumo_flags = torch.tensor([int(tiles_l[j]) == int(states[indices[j]].round_state.last_draw) for j in range(B)], dtype=torch.bool)
         cps_t = torch.tensor(cps, dtype=torch.int32)
 
-        # ── 1. Hand sub + river add (per-env for now; state mutation needs refs) ──
+        # ── 1. Hand sub + river add (per-env, timing each sub-step) ──
+        _t1a = _t1b = _t1c = _t1d = _t1e = 0.0
+        _n_furiten = 0
         for j, i in enumerate(indices):
             cp = cps[j]; t = tiles_l[j]
+
+            _ta = _time.time() if profile else 0
             states[i].players.hand_with_red[cp] = Hand.sub(states[i].players.hand_with_red[cp], t)
             states[i].players.hand[cp] = Hand.to_34(states[i].players.hand_with_red[cp])
+            if profile: _t1a += _time.time() - _ta
+
+            _ta = _time.time() if profile else 0
             states[i].players.river = River.add_discard(
                 states[i].players.river, torch.tensor(t), torch.tensor(cp),
                 torch.tensor(int(d_counts[j].item())), bool(is_tsumo_flags[j].item()),
                 bool(is_riichi_flags[j].item()))
             states[i].players.discards[cp, int(d_counts[j].item())] = t
             states[i].players.discard_counts[cp] += 1
+            if profile: _t1b += _time.time() - _ta
+
             states[i].players.riichi_declared[cp] = False
             states[i].players.ippatsu[cp] = False
             states[i].round_state.target = Tile.to_tile_type(t)
             states[i].round_state.last_player = cp
-            # tsumogiri flag
+
+            _ta = _time.time() if profile else 0
+            # tsumogiri flag in action history
             ah = states[i].round_state.action_history
             for col in reversed(range(ah.shape[1])):
                 if ah[0, col] != -1:
                     ah[2, col] = 1 if t == int(states[i].round_state.last_draw) else 0
                     break
-            # Furiten (rare path, only when tenpai)
+            if profile: _t1c += _time.time() - _ta
+
+            # Furiten check
+            _ta = _time.time() if profile else 0
             h_after = states[i].players.hand_with_red[cp]
             if Hand.is_tenpai(Hand.to_34(h_after)):
+                _n_furiten += 1
                 cr = torch.tensor([Hand.can_ron(h_after, tt) for tt in range(34)], dtype=torch.bool)
                 if _is_waiting_tile(cr, t):
                     states[i].players.furiten_by_discard[cp] = True
-                    states[i].players.furiten_by_pass[cp] = False
+            if profile: _t1d += _time.time() - _ta
 
         if profile: _t['1_hand_update'] = _time.time() - _t0; _t0 = _time.time()
 
@@ -1322,12 +1337,13 @@ class RedMahjong(Env):
         if profile:
             _t['4_next_player'] = _time.time() - _t0
             import logging; _log = logging.getLogger("ppo")
-            _log.info(f"  _discard_batch profile (B={B}): "
-                      f"1_hand={_t['1_hand_update']*1000:.1f}ms "
-                      f"2_haitei={_t['2_haitei']*1000:.1f}ms "
-                      f"3_meld_mask={_t['3_meld_mask']*1000:.1f}ms "
-                      f"4_next_player={_t['4_next_player']*1000:.1f}ms "
-                      f"draws={len(need_draw)}")
+            _log.info(f"  _discard_batch profile (B={B}):")
+            _log.info(f"    1_hand total={_t['1_hand_update']*1000:.0f}ms "
+                      f"(sub/to34={_t1a*1000:.0f}ms river={_t1b*1000:.0f}ms "
+                      f"ah={_t1c*1000:.0f}ms furiten={_t1d*1000:.0f}ms n_furiten={_n_furiten})")
+            _log.info(f"    2_haitei={_t['2_haitei']*1000:.1f}ms")
+            _log.info(f"    3_meld={_t['3_meld_mask']*1000:.0f}ms")
+            _log.info(f"    4_next={_t['4_next_player']*1000:.0f}ms draws={len(need_draw)}")
 
         return states
 

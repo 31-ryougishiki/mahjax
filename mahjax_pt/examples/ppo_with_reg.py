@@ -188,6 +188,7 @@ def train_ppo(
     eval_num_envs=100,
     device=None,
 ):
+    global torch
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -200,6 +201,15 @@ def train_ppo(
 
     # Environment
     env = make_env(env_name, round_mode=round_mode, observe_type="dict")
+    # torch.compile on NPU/GPU (compile before wrapping with auto_reset)
+    if device.type == "npu" or device.type == "cuda":
+        try:
+            import torch._dynamo
+            torch._dynamo.config.capture_scalar_outputs = True
+            env.step = torch.compile(env.step, mode="reduce-overhead", fullgraph=False)
+            logger.info("torch.compile enabled on env.step")
+        except Exception as e:
+            logger.warning(f"torch.compile failed: {e}, using eager mode")
     step_fn = auto_reset(env.step, env.init)
     NUM_PLAYERS = env.num_players
     NUM_ACTIONS = env.num_actions
