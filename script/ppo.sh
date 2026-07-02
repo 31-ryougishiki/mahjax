@@ -9,7 +9,7 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
 export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
 
 python "${REPO_ROOT}/mahjax_pt/examples/ppo_with_reg.py" \
-    --num_envs 12 \
+    --num_envs 128 \
     --num_steps 128 \
     --total_timesteps 50000 \
     --device npu:0
