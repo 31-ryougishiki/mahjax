@@ -387,6 +387,44 @@ class RedMahjong(Env):
 
         return state
 
+    def _draw_batch(self, states, indices):
+        """Batch draw for multiple envs — skips rare abortive draw checks."""
+        # 1. Accept pending riichi for each env
+        for i in indices:
+            states[i] = _accept_riichi(states[i])
+
+        # 2. Draw: move deck pointer + add tile + build mask
+        for i in indices:
+            cp = states[i].current_player
+            is_haitei = int(states[i].round_state.next_deck_ix) == int(states[i].round_state.last_deck_ix)
+            states[i].round_state.is_haitei = is_haitei
+
+            ix = int(states[i].round_state.next_deck_ix)
+            new_tile = int(states[i].round_state.deck[ix].item())
+            states[i].round_state.next_deck_ix = ix - 1
+            states[i].round_state.last_draw = new_tile
+            states[i].round_state.last_player = cp
+
+            states[i].players.hand_with_red[cp] = Hand.add(states[i].players.hand_with_red[cp], new_tile)
+            states[i].players.hand[cp] = Hand.to_34(states[i].players.hand_with_red[cp])
+
+            # Build legal action mask
+            if bool(states[i].players.riichi[cp].item()):
+                mask = self._make_legal_action_mask_after_draw_riichi(states[i], cp)
+            else:
+                mask = self._make_legal_action_mask_after_draw(states[i])
+            states[i].legal_action_mask = mask
+            states[i].round_state.draw_next = False
+            states[i].round_state.kan_declared = False
+            states[i].round_state.target = -1
+            states[i].round_state.shanten_current_player = Shanten.number(
+                Hand.to_34(states[i].players.hand_with_red[cp]))
+
+            if not bool(states[i].players.riichi[cp].item()):
+                states[i].players.furiten_by_pass[cp] = False
+
+        return states
+
     def _step_with_illegal_action(self, state, loser):
         """Penalize illegal actions: game ends, loser gets penalty."""
         state.terminated = True
@@ -1335,8 +1373,8 @@ class RedMahjong(Env):
             states[i].round_state.can_after_kan = False
 
         # Batch draw
-        for i in need_draw:
-            states[i] = self._draw(states[i])
+        if need_draw:
+            states = self._draw_batch(states, need_draw)
 
         if profile:
             _t['4_next_player'] = _time.time() - _t0
