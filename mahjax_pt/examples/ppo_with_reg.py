@@ -297,8 +297,9 @@ def train_ppo(
             _t0 = time.time()
             all_discard = all(a < Action.TSUMOGIRI + 1 for a in actions_list)
             if all_discard and hasattr(env, 'step_batch'):
-                # All discards → batch step
-                states = env.step_batch(states, actions_list)
+                # All discards → batch step (profile first call)
+                do_profile = (update_idx == 0 and t == 0)
+                states = env.step_batch(states, actions_list, profile=do_profile)
                 for i in range(num_envs):
                     if states[i].rewards.abs().sum() > 0:
                         pass  # reward handled below

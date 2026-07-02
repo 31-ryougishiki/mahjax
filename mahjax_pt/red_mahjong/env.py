@@ -1158,7 +1158,7 @@ class RedMahjong(Env):
 
     # ── Batch step (multi-env parallel) ────────────────────────
 
-    def step_batch(self, states, actions):
+    def step_batch(self, states, actions, profile=False):
         """Process multiple env steps in batched tensor operations.
 
         Groups envs by action type: discard-batch (~90% of actions) are processed
@@ -1184,7 +1184,7 @@ class RedMahjong(Env):
 
         # Process discard batch
         if discard_indices:
-            states = self._discard_batch(states, discard_indices, discard_actions)
+            states = self._discard_batch(states, discard_indices, discard_actions, profile=profile)
 
         # Process rare actions serially
         for idx, action in zip(serial_indices, serial_actions):
@@ -1192,11 +1192,14 @@ class RedMahjong(Env):
 
         return states
 
-    def _discard_batch(self, states, indices, actions):
+    def _discard_batch(self, states, indices, actions, profile=False):
         """Batch discard for multiple envs (tensor-parallel)."""
+        import time as _time
+        _t = {} if profile else None
         B = len(indices)
         device = states[0].players.hand.device
         NUM_ACT = Action.NUM_ACTION
+        _t0 = _time.time() if profile else 0
         P = 4
 
         # ── 1. Remove tiles from hands (batched) ──
@@ -1248,12 +1251,14 @@ class RedMahjong(Env):
                         ah[2, col] = 1
                         break
 
+        if profile: _t['1_hand_update'] = _time.time() - _t0; _t0 = _time.time()
         # ── 2. Check haitei (wall exhausted) ──
         for i in indices:
             if states[i].round_state.is_haitei:
                 if int(states[i].round_state.next_deck_ix) < int(states[i].round_state.last_deck_ix):
                     states[i].round_state.is_abortive_draw_normal = True
 
+        if profile: _t['2_haitei'] = _time.time() - _t0; _t0 = _time.time()
         # ── 3. Build meld/ron masks for OTHER players (batched) ──
         # Prepare batch tensors
         targets = torch.tensor([int(states[i].round_state.target)
@@ -1325,6 +1330,7 @@ class RedMahjong(Env):
                 any_action = mask_4p[:, p, :].any(dim=1)
                 mask_4p[any_action, p, Action.PASS] = True
 
+        if profile: _t['3_meld_mask'] = _time.time() - _t0; _t0 = _time.time()
         # ── 4. Set state legal masks + find next player ──
         for bidx, i in enumerate(indices):
             cp = states[i].current_player
@@ -1368,6 +1374,16 @@ class RedMahjong(Env):
 
             # Ippatsu: already cleared above; can_after_kan already cleared
             states[i].round_state.can_after_kan = False
+
+        if profile:
+            _t['4_next_player'] = _time.time() - _t0
+            import logging
+            _log = logging.getLogger("ppo")
+            _log.info(f"  _discard_batch profile (B={B}): "
+                      f"1_hand={_t['1_hand_update']*1000:.1f}ms "
+                      f"2_haitei={_t['2_haitei']*1000:.1f}ms "
+                      f"3_meld_mask={_t['3_meld_mask']*1000:.1f}ms "
+                      f"4_next_player={_t['4_next_player']*1000:.1f}ms")
 
         return states
 
