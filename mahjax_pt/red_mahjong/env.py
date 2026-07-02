@@ -1247,9 +1247,10 @@ class RedMahjong(Env):
 
             # Furiten: only check if player was likely tenpai (shanten==0 at draw time)
             # Skip expensive is_tenpai call for the common case (shanten>0 = not tenpai)
+            h_after = states[i].players.hand_with_red[cp]
             _ta = _time.time() if profile else 0
             shanten = int(states[i].round_state.shanten_current_player) if cp == states[i].current_player else -1
-            if shanten <= 0 or Hand.is_tenpai(Hand.to_34(h_after)):
+            if shanten <= 0:  # tenpai (0) or unknown (-1) → do full check
                 _n_furiten += 1 if shanten <= 0 else 0
                 cr = torch.tensor([Hand.can_ron(h_after, tt) for tt in range(34)], dtype=torch.bool)
                 if _is_waiting_tile(cr, t):
