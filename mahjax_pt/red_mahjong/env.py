@@ -454,8 +454,10 @@ class RedMahjong(Env):
         state.legal_action_mask = mask
         state.round_state.draw_next = False
         state.round_state.kan_declared = False
-        # Clear target (was set by previous discard if any)
         state.round_state.target = -1
+        # Update shanten for furiten optimization
+        state.round_state.shanten_current_player = Shanten.number(
+            Hand.to_34(state.players.hand_with_red[cp]))
 
         # 6. Clear furiten_by_pass for non-riichi players (JAX lines 842-844)
         if not bool(state.players.riichi[cp].item()):
@@ -1243,11 +1245,12 @@ class RedMahjong(Env):
                     break
             if profile: _t1c += _time.time() - _ta
 
-            # Furiten check
+            # Furiten: only check if player was likely tenpai (shanten==0 at draw time)
+            # Skip expensive is_tenpai call for the common case (shanten>0 = not tenpai)
             _ta = _time.time() if profile else 0
-            h_after = states[i].players.hand_with_red[cp]
-            if Hand.is_tenpai(Hand.to_34(h_after)):
-                _n_furiten += 1
+            shanten = int(states[i].round_state.shanten_current_player) if cp == states[i].current_player else -1
+            if shanten <= 0 or Hand.is_tenpai(Hand.to_34(h_after)):
+                _n_furiten += 1 if shanten <= 0 else 0
                 cr = torch.tensor([Hand.can_ron(h_after, tt) for tt in range(34)], dtype=torch.bool)
                 if _is_waiting_tile(cr, t):
                     states[i].players.furiten_by_discard[cp] = True
