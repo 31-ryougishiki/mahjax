@@ -260,32 +260,37 @@ def train_ppo(
             obs_batch = []; actions_b = []; log_probs_b = []; values_b = []
             rewards_b = []; dones_b = []; cps_b = []; masks_b = []
 
-            # ── Collect observations + network forward for all envs ──
+            # ── Batch network forward: stack all env observations ──
             obs_list = []; masks_list = []; cps_list = []; dones_list = []
-            actions_list = []; log_probs_list = []; values_list = []
-
             for i in range(num_envs):
                 s = states[i]
-                obs = env.observe(s)
-                obs_list.append(obs)
+                obs_list.append(env.observe(s))
                 masks_list.append(s.legal_action_mask)
                 cps_list.append(s.current_player)
                 dones_list.append(s.terminated or s.truncated)
-            t_obs += time.time() - time.time()  # negligible, included in net timing
 
-            # Batch network forward (when device=NPU, this is fast)
             _t0 = time.time()
-            for i in range(num_envs):
-                obs_dev = {k: v.to(device) for k, v in obs_list[i].items()}
-                mask_dev = masks_list[i].to(device)
-                with torch.no_grad():
-                    logits, value = network(obs_dev)
-                    logits = torch.where(mask_dev, logits, torch.full_like(logits, NEG))
-                    dist = torch.distributions.Categorical(logits=logits)
-                    a = dist.sample()
-                actions_list.append(int(a.item()))
-                log_probs_list.append(float(dist.log_prob(a).item()))
-                values_list.append(float(value.item()))
+            # Stack into batched tensors
+            obs_stack = {}
+            for k in obs_list[0].keys():
+                vals = [o[k] for o in obs_list]
+                tensors = [v if isinstance(v, torch.Tensor) else torch.tensor(v) for v in vals]
+                obs_stack[k] = torch.stack(tensors).to(device)  # (B, ...)
+
+            mask_stack = torch.stack(masks_list).to(device)  # (B, 87)
+
+            with torch.no_grad():
+                logits_all, values_all = network(obs_stack)  # (B, 87), (B,)
+                logits_all = torch.where(mask_stack, logits_all,
+                                         torch.full_like(logits_all, NEG))
+                dist = torch.distributions.Categorical(logits=logits_all)
+                actions_t = dist.sample()  # (B,)
+                log_probs_t = dist.log_prob(actions_t)  # (B,)
+
+            # Extract per-env results
+            actions_list = [int(actions_t[i].item()) for i in range(num_envs)]
+            log_probs_list = [float(log_probs_t[i].item()) for i in range(num_envs)]
+            values_list = [float(values_all[i].item()) for i in range(num_envs)]
             t_net += time.time() - _t0
 
             # ── Env step: use batch for discard actions ──

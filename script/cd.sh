@@ -1,7 +1,12 @@
-source /home/l30054496/cann/Ascend/cann-9.0.0/set_env.sh
-source /home/l30054496/cann/Ascend/nnal/atb/9.0.0/atb/set_env.sh
+#!/bin/bash
+# Collect offline data. Execute from repo root.
+# Usage: bash script/cd.sh
 
-export PYTHONPATH="/home/z30055003/mahjax:${PYTHONPATH}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-python /home/z30055003/mahjax/mahjax_pt/examples/collect_offline_data.py \
-    --num_samples 2000 --num_envs 4
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
+
+python "${REPO_ROOT}/mahjax_pt/examples/collect_offline_data.py" \
+    --num_samples 2000 \
+    --num_envs 4
