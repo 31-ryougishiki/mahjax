@@ -1156,6 +1156,221 @@ class RedMahjong(Env):
         state = self._draw(state)
         return state
 
+    # ── Batch step (multi-env parallel) ────────────────────────
+
+    def step_batch(self, states, actions):
+        """Process multiple env steps in batched tensor operations.
+
+        Groups envs by action type: discard-batch (~90% of actions) are processed
+        in one tensor op; rare actions (ron/tsumo/riichi/kan) fall back to serial.
+        """
+        B = len(states)
+        device = states[0].players.hand.device
+
+        # Classify actions
+        discard_indices = []
+        discard_actions = []
+        serial_indices = []
+        serial_actions = []
+
+        for i, a in enumerate(actions):
+            a = int(a) if isinstance(a, (torch.Tensor, np.generic)) else a
+            if a < Tile.NUM_TILE_TYPE_WITH_RED or a == Action.TSUMOGIRI:
+                discard_indices.append(i)
+                discard_actions.append(a)
+            else:
+                serial_indices.append(i)
+                serial_actions.append(a)
+
+        # Process discard batch
+        if discard_indices:
+            states = self._discard_batch(states, discard_indices, discard_actions)
+
+        # Process rare actions serially
+        for idx, action in zip(serial_indices, serial_actions):
+            states[idx] = self.step(states[idx], action)
+
+        return states
+
+    def _discard_batch(self, states, indices, actions):
+        """Batch discard for multiple envs (tensor-parallel)."""
+        B = len(indices)
+        device = states[0].players.hand.device
+        NUM_ACT = Action.NUM_ACTION
+        P = 4
+
+        # ── 1. Remove tiles from hands (batched) ──
+        for j, (i, a) in enumerate(zip(indices, actions)):
+            cp = states[i].current_player
+            tile = a if a < Tile.NUM_TILE_TYPE_WITH_RED else int(states[i].round_state.last_draw)
+            states[i].players.hand_with_red[cp] = Hand.sub(
+                states[i].players.hand_with_red[cp], tile)
+            states[i].players.hand[cp] = Hand.to_34(
+                states[i].players.hand_with_red[cp])
+
+            # Tsumogiri flag in action history
+            ah = states[i].round_state.action_history
+            for col in reversed(range(ah.shape[1])):
+                if ah[0, col] != -1:
+                    ah[2, col] = 1 if (a == Action.TSUMOGIRI or
+                        (a < Tile.NUM_TILE_TYPE_WITH_RED and
+                         tile == int(states[i].round_state.last_draw))) else 0
+                    break
+
+            # Add to river
+            d_count = int(states[i].players.discard_counts[cp].item())
+            is_riichi = bool(states[i].players.riichi_declared[cp].item())
+            is_tsumo = (tile == int(states[i].round_state.last_draw))
+            states[i].players.river = River.add_discard(
+                states[i].players.river, torch.tensor(tile), torch.tensor(cp),
+                torch.tensor(d_count), is_tsumo, is_riichi)
+            states[i].players.discards[cp, d_count] = tile
+            states[i].players.discard_counts[cp] += 1
+            states[i].players.riichi_declared[cp] = False
+
+            # Furiten check
+            h_after = states[i].players.hand_with_red[cp]
+            if Hand.is_tenpai(Hand.to_34(h_after)):
+                can_ron = torch.tensor([Hand.can_ron(h_after, t) for t in range(34)], dtype=torch.bool)
+                if _is_waiting_tile(can_ron, tile):
+                    states[i].players.furiten_by_discard[cp] = True
+                    states[i].players.furiten_by_pass[cp] = False
+            states[i].players.ippatsu[cp] = False
+
+            # Set target for meld eligibility
+            states[i].round_state.target = Tile.to_tile_type(tile)
+            states[i].round_state.last_player = cp
+
+            # Mark tsumogiri
+            if a == Action.TSUMOGIRI:
+                for col in reversed(range(ah.shape[1])):
+                    if ah[0, col] != -1:
+                        ah[2, col] = 1
+                        break
+
+        # ── 2. Check haitei (wall exhausted) ──
+        for i in indices:
+            if states[i].round_state.is_haitei:
+                if int(states[i].round_state.next_deck_ix) < int(states[i].round_state.last_deck_ix):
+                    states[i].round_state.is_abortive_draw_normal = True
+
+        # ── 3. Build meld/ron masks for OTHER players (batched) ──
+        # Prepare batch tensors
+        targets = torch.tensor([int(states[i].round_state.target)
+                                 for i in indices], dtype=torch.int32, device=device)
+        target_tts = torch.tensor([Tile.to_tile_type(int(t))
+                                    for t in targets], dtype=torch.int32, device=device)  # canonical tile type
+
+        # Hands for each of 4 players per env
+        hands_37 = torch.stack([states[i].players.hand_with_red for i in indices])  # (B, 4, 37)
+        hands_34 = torch.stack([states[i].players.hand for i in indices])            # (B, 4, 34)
+        discards = torch.tensor(indices, dtype=torch.int32, device=device)  # discarder seat per env (== cp)
+
+        # Build 4P mask arrays
+        mask_4p = torch.zeros(B, P, NUM_ACT, dtype=torch.bool, device=device)
+
+        for p in range(P):
+            # Skip discarder
+            is_discarder = (torch.tensor([states[i].current_player for i in indices], device=device) == p)
+            if is_discarder.all():
+                continue
+
+            p_hands_37 = hands_37[:, p, :]  # (B, 37)
+
+            # Ron check (batch)
+            has_yaku = torch.tensor([bool(states[i].players.has_yaku[p, 0].item())
+                                      for i in indices], dtype=torch.bool, device=device)
+            is_furiten = torch.tensor([bool(states[i].players.furiten_by_discard[p] |
+                                           states[i].players.furiten_by_pass[p])
+                                       for i in indices], dtype=torch.bool, device=device)
+            is_riichi_p = torch.tensor([bool(states[i].players.riichi[p].item())
+                                         for i in indices], dtype=torch.bool, device=device)
+            haitei = torch.tensor([bool(states[i].round_state.is_haitei)
+                                    for i in indices], dtype=torch.bool, device=device)
+            can_ron = Hand.can_ron_batch(p_hands_37, target_tts)
+            ron_ok = (has_yaku | haitei) & can_ron & ~is_furiten
+            # Riichi players: only ron, no melds
+            mask_4p[~is_riichi_p & ~is_discarder, p, Action.RON] = ron_ok[~is_riichi_p & ~is_discarder]
+            mask_4p[is_riichi_p & ~is_discarder, p, Action.RON] = ron_ok[is_riichi_p & ~is_discarder]
+
+            # Meld checks (only for non-riichi, non-haitei players)
+            cannot_meld = is_riichi_p | haitei
+            meld_ok = ~cannot_meld & ~is_discarder
+
+            if meld_ok.any():
+                meld_indices = torch.where(meld_ok)[0]
+                for bidx_t in meld_indices:
+                    bidx = int(bidx_t.item())
+                    i = indices[bidx]
+                    hand = states[i].players.hand_with_red[p]
+                    tgt = int(states[i].round_state.target)
+                    src = (states[i].current_player - p) % 4
+
+                    # Chi (only from left, src==3)
+                    if src == 3 and not Tile.to_tile_type(tgt) >= 27:
+                        for chi_a in CHI_ACTIONS:
+                            a = int(chi_a.item())
+                            if Hand.can_chi(hand, tgt, a):
+                                mask_4p[bidx, p, a] = True
+
+                    # Pon
+                    if Hand.can_no_red_pon(hand, tgt):
+                        mask_4p[bidx, p, Action.PON] = True
+                    if Hand.can_red_pon(hand, tgt):
+                        mask_4p[bidx, p, Action.PON_RED] = True
+                    if Hand.can_open_kan(hand, tgt):
+                        mask_4p[bidx, p, Action.OPEN_KAN] = True
+
+                # PASS
+                any_action = mask_4p[:, p, :].any(dim=1)
+                mask_4p[any_action, p, Action.PASS] = True
+
+        # ── 4. Set state legal masks + find next player ──
+        for bidx, i in enumerate(indices):
+            cp = states[i].current_player
+            mask_4p[bidx, cp] = False  # discarder can't act
+
+            # Find next player
+            can_ron_vec = mask_4p[bidx, :, Action.RON]
+            can_pon_vec = mask_4p[bidx, :, Action.PON] | mask_4p[bidx, :, Action.PON_RED]
+            can_kan_vec = mask_4p[bidx, :, Action.OPEN_KAN]
+            can_chi_vec = mask_4p[bidx, :, Action.CHI_L:Action.CHI_R_RED+1].any(dim=1)
+
+            can_any = can_ron_vec | can_pon_vec | can_kan_vec | can_chi_vec
+            no_meld = not can_any.any().item()
+
+            if no_meld:
+                states[i].current_player = (cp + 1) % 4
+                states[i].round_state.target = -1
+                states[i].round_state.draw_next = True
+                states[i].round_state.last_player = cp
+                if int(states[i].round_state.next_deck_ix) < int(states[i].round_state.last_deck_ix):
+                    states[i].round_state.is_abortive_draw_normal = True
+                    states[i] = self._abortive_draw_normal(states[i])
+                else:
+                    states[i] = self._draw(states[i])
+            else:
+                priority = torch.where(can_ron_vec, 3,
+                            torch.where(can_kan_vec, 2,
+                            torch.where(can_pon_vec, 1,
+                            torch.where(can_chi_vec, 0, -1))))
+                next_p = int(torch.argmax(priority).item())
+                if can_ron_vec.sum() > 1:
+                    distances = (torch.arange(4) - cp) % 4
+                    distances = torch.where(can_ron_vec, distances, torch.tensor(float('inf')))
+                    next_p = int(torch.argmin(distances).item())
+
+                states[i].current_player = next_p
+                states[i].legal_action_mask = mask_4p[bidx, next_p]
+                states[i].players.legal_action_mask = mask_4p[bidx]
+                states[i].round_state.last_player = cp
+                states[i].round_state.draw_next = False
+
+            # Ippatsu: already cleared above; can_after_kan already cleared
+            states[i].round_state.can_after_kan = False
+
+        return states
+
     def _finalize_game(self, state):
         """Apply final placement bonuses and mark game as terminated."""
         state.terminated = True

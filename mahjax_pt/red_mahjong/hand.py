@@ -364,3 +364,57 @@ class Hand:
             hand = Hand.sub(hand, Tile.to_red(tile_type))
             return Hand.sub(hand, tile_type, 3)
         return Hand.sub(hand, tile_type, 4)
+
+    # ── Batch operations (tensorized for multi-env parallelism) ──
+
+    @staticmethod
+    def add_batch(hands, tiles, x=1):
+        """hands: (B, 34) or (B, 37), tiles: (B,) int — batch tile add."""
+        B = hands.shape[0]
+        hands = hands.clone()
+        for b in range(B):
+            t = int(tiles[b].item()) if isinstance(tiles[b], torch.Tensor) else int(tiles[b])
+            if t >= 0 and t < hands.shape[1]:
+                hands[b, t] += x
+        return hands
+
+    @staticmethod
+    def sub_batch(hands, tiles, x=1):
+        return Hand.add_batch(hands, tiles, -x)
+
+    @staticmethod
+    def can_ron_batch(hands, tiles):
+        """hands: (B, 34) or (B, 37), tiles: (B,) int — batch can_ron check."""
+        B = hands.shape[0]
+        results = torch.zeros(B, dtype=torch.bool)
+        for b in range(B):
+            results[b] = Hand.can_ron(hands[b], int(tiles[b].item()))
+        return results
+
+    @staticmethod
+    def can_pon_batch(hands, tiles):
+        """hands: (B, 37), tiles: (B,) int."""
+        B = hands.shape[0]
+        results = torch.zeros(B, dtype=torch.bool)
+        for b in range(B):
+            results[b] = Hand.can_pon(hands[b], int(tiles[b].item()))
+        return results
+
+    @staticmethod
+    def can_chi_any_batch(hands, tiles):
+        """hands: (B, 37), tiles: (B,) int — can chi at all (for mask, don't care which type)."""
+        B = hands.shape[0]; results = torch.zeros(B, dtype=torch.bool)
+        for b in range(B):
+            h, t = hands[b], int(tiles[b].item())
+            for a in (Action.CHI_L, Action.CHI_M, Action.CHI_R,
+                       Action.CHI_L_RED, Action.CHI_M_RED, Action.CHI_R_RED):
+                if Hand.can_chi(h, t, a):
+                    results[b] = True; break
+        return results
+
+    @staticmethod
+    def can_open_kan_batch(hands, tiles):
+        B = hands.shape[0]; results = torch.zeros(B, dtype=torch.bool)
+        for b in range(B):
+            results[b] = Hand.can_open_kan(hands[b], int(tiles[b].item()))
+        return results

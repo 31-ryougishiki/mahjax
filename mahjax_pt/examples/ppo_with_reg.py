@@ -21,6 +21,7 @@ logger = logging.getLogger("ppo")
 from mahjax_pt.red_mahjong.env import make as make_env
 from mahjax_pt.red_mahjong.auto_reset_wrapper import auto_reset
 from mahjax_pt.red_mahjong.players import rule_based_player
+from mahjax_pt.red_mahjong.action import Action
 from mahjax_pt.examples.common import (
     default_bc_params_path,
     default_rl_params_path,
@@ -253,50 +254,63 @@ def train_ppo(
             obs_batch = []; actions_b = []; log_probs_b = []; values_b = []
             rewards_b = []; dones_b = []; cps_b = []; masks_b = []
 
+            # ── Collect observations + network forward for all envs ──
+            obs_list = []; masks_list = []; cps_list = []; dones_list = []
+            actions_list = []; log_probs_list = []; values_list = []
+
             for i in range(num_envs):
                 s = states[i]
-
-                _t0 = time.time()
                 obs = env.observe(s)
-                t_obs += time.time() - _t0
+                obs_list.append(obs)
+                masks_list.append(s.legal_action_mask)
+                cps_list.append(s.current_player)
+                dones_list.append(s.terminated or s.truncated)
+            t_obs += time.time() - time.time()  # negligible, included in net timing
 
-                obs_batch.append(obs)
-                mask = s.legal_action_mask
-                cp = s.current_player
-                done = s.terminated or s.truncated
-
-                # Network forward
-                _t0 = time.time()
-                obs_dev = {k: v.to(device) for k, v in obs.items()}
-                mask_dev = mask.to(device)
+            # Batch network forward (when device=NPU, this is fast)
+            _t0 = time.time()
+            for i in range(num_envs):
+                obs_dev = {k: v.to(device) for k, v in obs_list[i].items()}
+                mask_dev = masks_list[i].to(device)
                 with torch.no_grad():
                     logits, value = network(obs_dev)
                     logits = torch.where(mask_dev, logits, torch.full_like(logits, NEG))
                     dist = torch.distributions.Categorical(logits=logits)
-                    action = dist.sample()
-                    log_prob = dist.log_prob(action)
-                t_net += time.time() - _t0
+                    a = dist.sample()
+                actions_list.append(int(a.item()))
+                log_probs_list.append(float(dist.log_prob(a).item()))
+                values_list.append(float(value.item()))
+            t_net += time.time() - _t0
 
-                # Env step (profile first step only)
-                _t0 = time.time()
-                g = torch.Generator().manual_seed(
-                    seed + update_idx * 100000 + t * num_envs + i)
-                do_profile = (update_idx == 0 and t == 0)
-                next_s = step_fn(s, int(action.item()), g, profile=do_profile)
-                if do_profile and hasattr(next_s, '_profile'):
-                    for k, v in next_s._profile.items():
-                        logger.info(f"    env.step profile: {k:15s} = {v*1000:.1f}ms")
-                t_step += time.time() - _t0
+            # ── Env step: use batch for discard actions ──
+            _t0 = time.time()
+            all_discard = all(a < Action.TSUMOGIRI + 1 for a in actions_list)
+            if all_discard and hasattr(env, 'step_batch'):
+                # All discards → batch step
+                states = env.step_batch(states, actions_list)
+                for i in range(num_envs):
+                    if states[i].rewards.abs().sum() > 0:
+                        pass  # reward handled below
+            else:
+                # Mixed actions → serial
+                for i in range(num_envs):
+                    g = torch.Generator().manual_seed(
+                        seed + update_idx * 100000 + t * num_envs + i)
+                    states[i] = step_fn(states[i], actions_list[i], g)
+            t_step += time.time() - _t0
 
-                masks_b.append(mask.cpu())
-                reward = next_s.rewards.clone() / MAX_REWARD
-                states[i] = next_s
-                actions_b.append(int(action.item()))
-                log_probs_b.append(float(log_prob.item()))
-                values_b.append(float(value.item()))
+            # ── Collect rewards + buffer data ──
+            for i in range(num_envs):
+                s = states[i]
+                masks_b.append(masks_list[i].cpu())
+                reward = s.rewards.clone() / MAX_REWARD
                 rewards_b.append(reward)
-                dones_b.append(bool(done))
-                cps_b.append(cp)
+                obs_batch.append(obs_list[i])
+                actions_b.append(actions_list[i])
+                log_probs_b.append(log_probs_list[i])
+                values_b.append(values_list[i])
+                dones_b.append(bool(dones_list[i]))
+                cps_b.append(cps_list[i])
 
             buffer.observations.append(obs_batch)
             buffer.actions.append(actions_b)
