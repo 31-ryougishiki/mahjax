@@ -105,14 +105,32 @@ def _append_meld_to_player(state, meld_packed, player, discard_idx, src):
 
 
 def _accept_riichi(state):
-    """Process a riichi declaration: pay stick, toggle flags."""
-    cp = state.current_player
-    state.players.riichi[cp] = True
-    state.players.riichi_declared[cp] = True
-    state.players.double_riichi[cp] = state.round_state.next_deck_ix == 83
-    state.players.ippatsu[cp] = True
-    state.round_state.kyotaku += 1
-    state.round_state.score[cp] -= RIICHI_BET // 100
+    """Accept riichi during _draw (matches JAX _accept_riichi at _draw top).
+
+    JAX _accept_riichi uses `last_player`, not `current_player`, because
+    the riichi declaration was made on the PREVIOUS step. The actual payment
+    and flag-setting happens HERE during the next draw.
+    """
+    lp = int(state.round_state.last_player)
+    already_riichi = bool(state.players.riichi[lp].item())
+    has_declared = (not already_riichi) and bool(state.players.riichi_declared[lp].item())
+
+    if not already_riichi and has_declared:
+        # Pay riichi bet
+        state.round_state.score[lp] -= RIICHI_BET // 100
+        state.rewards[lp] += -10.0  # -1000 points in reward units
+        state.round_state.kyotaku += 1
+
+        # Set riichi flag
+        state.players.riichi[lp] = True
+        state.players.riichi_declared[lp] = False
+
+        # Ippatsu and Double Riichi
+        state.players.ippatsu[lp] = True
+        is_double = _is_first_turn(state.round_state.next_deck_ix) and \
+            (int(state.players.meld_counts.sum().item()) == 0)
+        state.players.double_riichi[lp] = is_double
+
     return state
 
 
@@ -128,7 +146,8 @@ def _calc_wind(east_player):
 
 
 def _is_first_turn(next_deck_ix):
-    return next_deck_ix == 83
+    """True if within first 4 draws of the round (kyuushu / double riichi window)."""
+    return next_deck_ix >= FIRST_DRAW_IDX - 4  # >= 79, matching JAX
 
 
 def _append_action_history(state, action):
@@ -245,8 +264,11 @@ class RedMahjong(Env):
         state.round_state.last_deck_ix = DEAD_WALL_TILES
         state.round_state.draw_next = True
 
-        # Seat winds
-        dealer = 0  # Use a random dealer
+        # Seat winds — random dealer (matching JAX)
+        if isinstance(key, torch.Generator):
+            dealer = int(torch.randint(0, 4, (1,), generator=key).item())
+        else:
+            dealer = 0
         state.round_state.init_wind = _calc_wind(dealer)
         state.round_state.seat_wind = _calc_wind(dealer)
         state.round_state.dealer = dealer
@@ -266,12 +288,9 @@ class RedMahjong(Env):
         # First draw for the dealer: draw from next_deck_ix (which starts at 83),
         # then decrement (deck is consumed right-to-left from 83 down to last_deck_ix)
         state.current_player = state.round_state.dealer
-        state = self._draw(state)
-        state = self._make_legal_action_mask_after_draw(state)
-
-        # Shanten for current player
-        h34 = Hand.to_34(state.players.hand_with_red[state.current_player])
-        state.round_state.shanten_current_player = Shanten.number(h34)
+        state = self._draw(state)  # _draw now sets legal_action_mask internally
+        state.round_state.shanten_current_player = \
+            Shanten.number(Hand.to_34(state.players.hand_with_red[state.current_player]))
         return state
 
     # ═════════════════════════════════════════════════════════════
@@ -349,28 +368,97 @@ class RedMahjong(Env):
     # ═════════════════════════════════════════════════════════════
 
     def _draw(self, state):
-        """Draw a tile from the wall for the current player.
+        """Draw a tile from the wall (matches JAX _draw lines 788-853).
 
-        The deck is consumed right-to-left: next_deck_ix starts at 83 and decrements.
-        When it falls below last_deck_ix, the wall is exhausted (haitei).
+        - Accepts pending riichi at start
+        - Checks special abortive draws (four wind, four riichi)
+        - Updates is_haitei flag
+        - Overwrites last_draw and last_player
         """
+        # 1. Accept pending riichi (JAX line 797)
+        state = _accept_riichi(state)
+
         cp = state.current_player
+
+        # 2. Check special abortive draws (JAX lines 800-816)
+        first_discards_exist = all(int(state.players.discard_counts[i].item()) > 0 for i in range(4))
+        is_four_wind = False
+        if first_discards_exist:
+            first_tiles = []
+            for i in range(4):
+                dec = River.decode_tile(state.players.river[i])
+                first_tiles.append(int(dec[0].item()))
+            is_four_wind = all(Tile.is_tile_four_wind(t) for t in first_tiles) and all(t == first_tiles[0] for t in first_tiles)
+
+        is_pure_first_turn = (int(state.round_state.next_deck_ix) >= FIRST_DRAW_IDX - 5) and \
+            (int(state.players.meld_counts.sum().item()) == 0)
+        is_four_wind_draw = is_four_wind and is_pure_first_turn
+        is_four_riichi_draw = int(state.players.riichi.sum().item()) == 4
+        config = self.game_config
+        is_special = config.enable_special_abortive_draw and (is_four_wind_draw or is_four_riichi_draw)
+
+        if is_special:
+            return _trigger_special_abortive_draw(state)
+
+        # 3. Move deck pointer and draw (JAX lines 817-820)
+        is_haitei = int(state.round_state.next_deck_ix) == int(state.round_state.last_deck_ix)
+        state.round_state.is_haitei = is_haitei
+
         ix = int(state.round_state.next_deck_ix)
-        tile = int(state.round_state.deck[ix].item())
-        state.round_state.next_deck_ix = ix - 1  # Move down toward the dead wall
-        state.round_state.last_draw = tile
+        new_tile = int(state.round_state.deck[ix].item())
+        state.round_state.next_deck_ix = ix - 1
+        state.round_state.last_draw = new_tile
         state.round_state.last_player = cp
-        state.players.hand_with_red[cp] = Hand.add(state.players.hand_with_red[cp], tile)
+
+        # 4. Add tile to hand (JAX lines 819-824)
+        state.players.hand_with_red[cp] = Hand.add(state.players.hand_with_red[cp], new_tile)
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
-        # Haitei: next draw position has entered the dead wall
-        if state.round_state.next_deck_ix < state.round_state.last_deck_ix:
-            state.round_state.is_haitei = True
+
+        # 5. Build legal action mask (JAX lines 825-829)
+        if bool(state.players.riichi[cp].item()):
+            mask = self._make_legal_action_mask_after_draw_riichi(state, cp)
+        else:
+            mask = self._make_legal_action_mask_after_draw(state)
+
+        state.legal_action_mask = mask
         state.round_state.draw_next = False
         state.round_state.kan_declared = False
+        # Clear target (was set by previous discard if any)
+        state.round_state.target = -1
+
+        # 6. Clear furiten_by_pass for non-riichi players (JAX lines 842-844)
+        if not bool(state.players.riichi[cp].item()):
+            state.players.furiten_by_pass[cp] = False
+
         return state
 
+    def _make_legal_action_mask_after_draw_riichi(self, state, cp):
+        """Legal actions after draw for a riichi player (JAX _w_riichi variant).
+
+        Riichi players can ONLY discard (no tsumo, no kan, no riichi, no kyuushu).
+        Tsumogiri is only allowed if last_draw can be discarded.
+        """
+        hand = state.players.hand_with_red[cp]
+        mask = ZERO_MASK_1D.clone()
+
+        # Discard actions: only for tiles the player has
+        for i in range(Tile.NUM_TILE_TYPE_WITH_RED):
+            mask[i] = hand[i] > 0
+
+        # Tsumogiri: allowed only if have >=2 of last_draw
+        ld = int(state.round_state.last_draw)
+        if ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED and hand[ld] >= 2:
+            mask[Action.TSUMOGIRI] = True
+
+        # Closed kan after riichi: only if can_win doesn't change (JAX _w_riichi lines 935-937)
+        for i in range(34):
+            if Hand.can_closed_kan(hand, i):
+                mask[37 + i] = True
+
+        return mask
+
     def _make_legal_action_mask_after_draw(self, state):
-        """Build legal action masks for current player after drawing a tile."""
+        """Build legal action masks for current player after drawing a tile (matches JAX)."""
         cp = state.current_player
         hand = state.players.hand_with_red[cp]
         mask = ZERO_MASK_1D.clone()
@@ -380,31 +468,40 @@ class RedMahjong(Env):
             if hand[i] > 0:
                 mask[i] = True
 
-        # Tsumogiri
-        ld = state.round_state.last_draw
-        if ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED and hand[ld] > 0:
-            mask[Action.TSUMOGIRI] = True
+        # Tsumogiri (always legal after draw, matching JAX)
+        mask[Action.TSUMOGIRI] = True
 
-        # Self kan (closed + added) — actions 37..70 (34 slots, one per tile type)
-        for i in range(34):
-            if Hand.can_closed_kan(hand, i):
-                mask[37 + i] = True
-            # Added kan: requires an existing pon meld
-            n_melds = int(state.players.meld_counts[cp].item())
-            for m_idx in range(n_melds):
-                m = int(state.players.melds[cp, m_idx].item())
-                if m != EMPTY_MELD and Meld.is_pon(m) and Meld.target(m) == i:
-                    if Hand.can_added_kan(hand, i):
-                        mask[37 + i] = True
+        # Self kan — blocked by haitei or 4-kan limit
+        cannot_kan = state.round_state.is_haitei or (int(state.players.n_kan.sum().item()) >= 4)
+        if not cannot_kan:
+            for i in range(34):
+                if Hand.can_closed_kan(hand, i):
+                    mask[37 + i] = True
+                # Added kan: requires an existing pon meld
+                n_melds = int(state.players.meld_counts[cp].item())
+                for m_idx in range(n_melds):
+                    m = int(state.players.melds[cp, m_idx].item())
+                    if m != EMPTY_MELD and Meld.is_pon(m) and Meld.target(m) == i:
+                        if Hand.can_added_kan(hand, i):
+                            mask[37 + i] = True
 
-        # Tsumo
-        if Hand.can_tsumo(hand):
+        # Tsumo: allowed if hand can win AND (concealed | after_kan | haitei | has_yaku)
+        is_conc = bool(state.players.is_hand_concealed[cp].item())
+        can_tsumo = Hand.can_tsumo(hand)
+        can_after_kan = state.round_state.can_after_kan
+        is_haitei = state.round_state.is_haitei
+        has_yaku_tsumo = bool(state.players.has_yaku[cp, 0].item())  # precomputed or True
+        if can_tsumo and (is_conc or can_after_kan or is_haitei or has_yaku_tsumo):
             mask[Action.TSUMO] = True
 
-        # Riichi
+        # Riichi: need >=4 tiles in wall, not already riichi, score >= bet
+        nxt = int(state.round_state.next_deck_ix)
+        lst = int(state.round_state.last_deck_ix)
+        tiles_left = nxt - lst  # remaining drawable tiles
         if (not state.players.riichi[cp]
             and state.round_state.score[cp] >= RIICHI_BET // 100
             and state.players.is_hand_concealed[cp]
+            and tiles_left >= 4
             and Hand.can_riichi(hand)):
             mask[Action.RIICHI] = True
 
@@ -412,8 +509,7 @@ class RedMahjong(Env):
         if _is_first_turn(state.round_state.next_deck_ix) and Hand.can_kyuushu(hand):
             mask[Action.KYUUSHU] = True
 
-        state.legal_action_mask = mask
-        return state
+        return mask
 
     def _discard(self, state, tile):
         """Handle a discard action."""
@@ -466,92 +562,140 @@ class RedMahjong(Env):
         return state
 
     def _make_legal_action_mask_after_discard(self, state):
-        """After a discard, set legal action masks for ron/meld for all players."""
+        """After a discard, set per-player legal action masks for ron/meld (matches JAX).
+
+        JAX _make_legal_action_mask_after_discard lines 1053-1087.
+        """
         cp = state.current_player
         discarded_player = cp
         target = state.round_state.target
 
-        # Give the current player a pass-only mask (they'll be overwritten by round logic)
+        # Houtei: final discard before exhaustive draw (JAX lines 1064-1066)
+        haitei = bool(state.round_state.is_haitei) or \
+            (int(state.round_state.next_deck_ix) < int(state.round_state.last_deck_ix))
+
         mask_4p = ZERO_MASK_2D.clone()
 
         for p in range(4):
             if p == discarded_player:
                 continue
             hand = state.players.hand_with_red[p]
+            src = (discarded_player - p) % 4  # relative position
+
+            # Restrictions (JAX lines 1067-1070)
+            is_riichi = bool(state.players.riichi[p].item())
+            cannot_meld = is_riichi or haitei
+            cannot_kan = int(state.players.n_kan.sum().item()) >= 4
+
             m = mask_4p[p]
 
-            # Ron
-            if Hand.can_ron(hand, target):
-                m[Action.RON] = True
+            # Chi: only from left player (src==3), not when cannot_meld (JAX lines 1074-1076)
+            if not cannot_meld and src == 3:
+                for chi_a in CHI_ACTIONS:
+                    a = int(chi_a.item())
+                    if Hand.can_chi(hand, target, a):
+                        m[a] = True
 
-            # Pon / Open Kan
-            if Hand.can_open_kan(hand, target):
-                m[Action.OPEN_KAN] = True
-            if Hand.can_pon(hand, target):
+            # Pon / Open Kan: not when cannot_meld or cannot_kan (JAX lines 1077, 1099-1107)
+            if not cannot_meld:
                 if Hand.can_no_red_pon(hand, target):
                     m[Action.PON] = True
                 if Hand.can_red_pon(hand, target):
                     m[Action.PON_RED] = True
+                if Hand.can_open_kan(hand, target) and not cannot_kan:
+                    m[Action.OPEN_KAN] = True
 
-            # Chi
-            for chi_a in CHI_ACTIONS:
-                a = int(chi_a.item())
-                if Hand.can_chi(hand, target, a):
-                    m[a] = True
+            # Ron: needs yaku + not furiten (JAX lines 1078-1083)
+            can_ron = Hand.can_ron(hand, target)
+            has_yaku = bool(state.players.has_yaku[p, 0].item())
+            is_furiten = bool(state.players.furiten_by_discard[p] | state.players.furiten_by_pass[p])
+            ron_ok = (has_yaku or haitei) and can_ron and not is_furiten
+            if ron_ok:
+                m[Action.RON] = True
 
-            # PASS is always legal if any meld/ron action is available
+            # PASS is always legal if any action is available
             if m.any():
                 m[Action.PASS] = True
 
-            # Double ron check
-            if state.round_state.terminated_round and m[Action.RON]:
-                # A ron has already been declared on this discard
-                pass  # Allow double ron if configured
-
             mask_4p[p] = m
 
-        # Find next player to act (first non-empty mask after discarded player)
-        found = False
-        for offset in range(1, 4):
-            p = (discarded_player + offset) % 4
-            if mask_4p[p].any():
-                state.current_player = p
-                state.legal_action_mask = mask_4p[p]
-                found = True
-                break
+        # Set discarded player's mask to all False (JAX lines 997-999)
+        mask_4p[discarded_player] = False
 
-        if not found:
-            # Nobody can call; either abortive draw (wall exhausted) or draw next tile
+        # Find next player to act (JAX _next_meld_player logic)
+        from collections import namedtuple
+        can_ron_vec = mask_4p[:, Action.RON]
+        can_pon_vec = mask_4p[:, Action.PON] | mask_4p[:, Action.PON_RED]
+        can_open_kan_vec = mask_4p[:, Action.OPEN_KAN]
+        can_chi_vec = torch.tensor([
+            mask_4p[i, Action.CHI_L:Action.CHI_R_RED + 1].any().item() for i in range(4)
+        ])
+
+        can_any = can_ron_vec | can_pon_vec | can_open_kan_vec | can_chi_vec
+        no_meld_player = not can_any.any().item()
+
+        if no_meld_player:
             state.current_player = (discarded_player + 1) % 4
-            if state.round_state.is_abortive_draw_normal:
+            state.round_state.target = -1
+            state.round_state.draw_next = True
+            state.round_state.last_player = discarded_player
+            # Check abortive draw
+            if int(state.round_state.next_deck_ix) < int(state.round_state.last_deck_ix):
+                state.round_state.is_abortive_draw_normal = True
                 state = self._abortive_draw_normal(state)
             else:
                 state = self._draw(state)
-                state = self._make_legal_action_mask_after_draw(state)
+        else:
+            # Priority: RON > OPEN_KAN > PON > CHI (JAX lines 1147-1164)
+            priority = torch.where(can_ron_vec, 3,
+                        torch.where(can_open_kan_vec, 2,
+                        torch.where(can_pon_vec, 1,
+                        torch.where(can_chi_vec, 0, -1))))
+            next_player = int(torch.argmax(priority).item())
+
+            # Multiple ron candidates: closest to discarder (JAX lines 1157-1164)
+            if can_ron_vec.sum() > 1:
+                distances = (torch.arange(4) - discarded_player) % 4
+                distances = torch.where(can_ron_vec, distances, torch.tensor(float('inf')))
+                next_player = int(torch.argmin(distances).item())
+
+            state.current_player = next_player
+            state.legal_action_mask = mask_4p[next_player]
+            state.round_state.last_player = discarded_player
+            state.round_state.target = target
+            state.round_state.draw_next = False
 
         state.players.legal_action_mask = mask_4p
         return state
 
     def _riichi(self, state):
-        """Riichi declaration step."""
+        """Riichi declaration step (matches JAX _riichi).
+
+        Only sets riichi_declared flag. Payment happens in _accept_riichi during
+        the NEXT _draw. Legal mask: only tenpai discards + tsumogiri if applicable.
+        """
         cp = state.current_player
-        # The riichi action just sets flags; the next discard will be riichi-stamped
-        state.players.riichi[cp] = True
-        # Wait - in mahjax, RIICHI action is followed by discard.
-        # The original code has riichi as a separate step that modifies
-        # the legal mask to force a discard. Let me handle this properly.
-        # After calling RIICHI, the player must discard (only discard actions are legal).
-        state = _accept_riichi(state)
-        # Set legal action mask: only discard actions
-        mask = torch.zeros(LEGAL_ACTION_SIZE, dtype=torch.bool)
         hand = state.players.hand_with_red[cp]
+
+        # Find which discards leave the hand tenpai
+        discard_ok = torch.zeros(Tile.NUM_TILE_TYPE_WITH_RED, dtype=torch.bool)
         for i in range(Tile.NUM_TILE_TYPE_WITH_RED):
             if hand[i] > 0:
-                mask[i] = True
-        ld = state.round_state.last_draw
-        if ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED and hand[ld] > 0:
-            mask[Action.TSUMOGIRI] = True
+                sub_hand = Hand.sub(hand, i)
+                discard_ok[i] = Hand.is_tenpai(Hand.to_34(sub_hand))
+
+        # Build mask: only tenpai discards
+        mask = torch.zeros(LEGAL_ACTION_SIZE, dtype=torch.bool)
+        mask[:Tile.NUM_TILE_TYPE_WITH_RED] = discard_ok
+
+        # Tsumogiri: allowed if last_draw can be discarded and leaves tenpai
+        ld = int(state.round_state.last_draw)
+        if ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED:
+            mask[Action.TSUMOGIRI] = (hand[ld] >= 2) and discard_ok[ld]
+
         state.legal_action_mask = mask
+        state.players.riichi_declared[cp] = True
+        state.round_state.draw_next = False
         return state
 
     def _ron(self, state):
@@ -563,12 +707,25 @@ class RedMahjong(Env):
         yaku, fan, fu = Yaku.judge(hand, True, cp, state)
         fan = int(fan) if isinstance(fan, torch.Tensor) else fan
         fu = int(fu) if isinstance(fu, torch.Tensor) else fu
-        state.players.has_yaku[cp, 1] = True
-        state.players.fan[cp, 1] = fan
-        state.players.fu[cp, 1] = fu
-        state.players.has_won[cp] = True
+
+        # Add situational yaku bonuses (matching JAX _ron lines 1709-1724)
+        is_ippatsu = bool(state.players.ippatsu[cp].item()) and bool(state.players.riichi[cp].item())
+        is_double_riichi = bool(state.players.double_riichi[cp].item())
+        can_robbing_kan = bool(state.round_state.kan_declared)
+        is_houtei = bool(state.round_state.is_haitei) and not can_robbing_kan
+        is_yakuman = (fu == 0)
+        if not is_yakuman:
+            fan += int(is_ippatsu) + int(is_double_riichi) + int(can_robbing_kan) + int(is_houtei)
 
         self._settle_ron(state, cp, discarded_player, fan, fu)
+
+        # Kyotaku bonus goes to winner (JAX _ron line 1743)
+        kyotaku_bonus = 10 * int(state.round_state.kyotaku)
+        state.rewards[cp] += float(kyotaku_bonus)
+        state.round_state.score[cp] += kyotaku_bonus
+        state.round_state.kyotaku = 0
+
+        state.players.has_won[cp] = True
         state.round_state.terminated_round = True
 
         if self.one_round:
@@ -584,12 +741,25 @@ class RedMahjong(Env):
         yaku, fan, fu = Yaku.judge(hand, False, cp, state)
         fan = int(fan) if isinstance(fan, torch.Tensor) else fan
         fu = int(fu) if isinstance(fu, torch.Tensor) else fu
-        state.players.has_yaku[cp, 0] = True
-        state.players.fan[cp, 0] = fan
-        state.players.fu[cp, 0] = fu
-        state.players.has_won[cp] = True
+
+        # Add situational yaku bonuses (matching JAX _tsumo lines 1809-1844)
+        is_ippatsu = bool(state.players.ippatsu[cp].item()) and bool(state.players.riichi[cp].item())
+        is_double_riichi = bool(state.players.double_riichi[cp].item())
+        can_after_kan = bool(state.round_state.can_after_kan)
+        is_haitei = bool(state.round_state.is_haitei) and not can_after_kan
+        is_yakuman = (fu == 0)
+        if not is_yakuman:
+            fan += int(can_after_kan) + int(is_ippatsu) + int(is_double_riichi) + int(is_haitei)
 
         self._settle_tsumo(state, cp, fan, fu)
+
+        # Kyotaku bonus goes to winner (JAX _tsumo line 1878)
+        kyotaku_bonus = 10 * int(state.round_state.kyotaku)
+        state.rewards[cp] += float(kyotaku_bonus)
+        state.round_state.score[cp] += kyotaku_bonus
+        state.round_state.kyotaku = 0
+
+        state.players.has_won[cp] = True
         state.round_state.terminated_round = True
 
         if self.one_round:
@@ -602,56 +772,46 @@ class RedMahjong(Env):
         """Settle payments for a ron win."""
         fan = int(fan) if isinstance(fan, torch.Tensor) else fan
         fu = int(fu) if isinstance(fu, torch.Tensor) else fu
+        import math
         base = Yaku.score(fan, fu)
-
-        dealer = state.round_state.dealer
-        honba = int(state.round_state.honba)
-
-        payment = base + honba * 300
-        if winner == dealer:
-            payment = (payment * 3 + 199) // 200 * 200  # round up
-        else:
-            payment = (base * 2 + 99) // 200 * 200 if winner == dealer else base  # simplified
-            payment += honba * 300
-
-        # Simplified: winner gets base, loser pays base
-        state.round_state.score[winner] += payment // 100
-        state.round_state.score[loser] -= payment // 100
-        state.rewards[winner] = payment / 100.0
-        state.rewards[loser] = -payment / 100.0
+        is_dealer = winner == int(state.round_state.dealer)
+        score = base * 6 if is_dealer else base * 4
+        score = math.ceil(score / 100.0)
+        honba_points = int(state.round_state.honba) * 3
+        total = int(score) + honba_points
+        state.round_state.score[winner] += total
+        state.round_state.score[loser] -= total
+        state.rewards[winner] = float(total)
+        state.rewards[loser] = float(-total)
 
     def _settle_tsumo(self, state, winner, fan, fu):
         """Settle payments for a tsumo win."""
         fan = int(fan) if isinstance(fan, (torch.Tensor, np.generic)) else fan
         fu = int(fu) if isinstance(fu, (torch.Tensor, np.generic)) else fu
+        import math
         base = Yaku.score(fan, fu)
-        dealer = state.round_state.dealer
+        is_dealer = winner == int(state.round_state.dealer)
         honba = int(state.round_state.honba)
 
-        if winner == dealer:
-            payment = (base + honba * 100) // 400 * 100
+        if is_dealer:
+            payment = int(math.ceil(base * 2 / 100.0)) + honba
             for p in range(4):
                 if p != winner:
                     state.round_state.score[p] -= payment
                     state.round_state.score[winner] += payment
-                    state.rewards[p] -= payment / 100.0
-                    state.rewards[winner] += payment / 100.0
+                    state.rewards[p] -= float(payment)
+                    state.rewards[winner] += float(payment)
         else:
-            payment = (base + honba * 100) // 400 * 100
-            dealer_payment = (2 * base + honba * 100) // 400 * 100
+            non_dealer_pay = int(math.ceil(base / 100.0)) + honba
+            dealer_pay = int(math.ceil(base * 2 / 100.0)) + honba
             for p in range(4):
                 if p == winner:
                     continue
-                elif p == dealer:
-                    state.round_state.score[p] -= dealer_payment
-                    state.round_state.score[winner] += dealer_payment
-                    state.rewards[p] -= dealer_payment / 100.0
-                    state.rewards[winner] += dealer_payment / 100.0
-                else:
-                    state.round_state.score[p] -= payment
-                    state.round_state.score[winner] += payment
-                    state.rewards[p] -= payment / 100.0
-                    state.rewards[winner] += payment / 100.0
+                pay = dealer_pay if p == int(state.round_state.dealer) else non_dealer_pay
+                state.round_state.score[p] -= pay
+                state.round_state.score[winner] += pay
+                state.rewards[p] -= float(pay)
+                state.rewards[winner] += float(pay)
 
     def _pon(self, state, action):
         """Handle a PON action."""
@@ -671,26 +831,28 @@ class RedMahjong(Env):
 
         # Clear abortive draw flags
         state.round_state.draw_next = False
-        state = self._make_legal_action_mask_after_draw(state)
+        state.legal_action_mask = self._make_legal_action_mask_after_draw(state)
         state.current_player = cp
         return state
 
     def _open_kan(self, state):
-        """Handle an OPEN KAN action."""
+        """Handle an OPEN KAN action (matches JAX _kan → open_kan branch)."""
         cp = state.current_player
         target = state.round_state.target
+        discarded_player = state.round_state.last_player
         hand = state.players.hand_with_red[cp]
-        src = state.round_state.last_player
+        src = (discarded_player - cp) % 4
 
-        meld = Meld.init(Action.OPEN_KAN, target, 2)  # src=2 means from across (relative simplified)
-        _append_meld_to_player(state, meld, cp, int(state.players.discard_counts[src].item()) - 1, src)
+        meld = Meld.init(Action.OPEN_KAN, target, src)
+        # _append_meld handles river update
+        d_idx = int(state.players.discard_counts[discarded_player].item()) - 1
+        _append_meld_to_player(state, meld, cp, d_idx, discarded_player)
 
         state.players.hand_with_red[cp] = Hand.open_kan(hand, target)
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.is_hand_concealed[cp] = False
         state.players.n_kan[cp] += 1
 
-        # Flip dora
         state = self._flip_dora(state)
         state = self._draw_after_kan(state)
         return state
@@ -734,7 +896,7 @@ class RedMahjong(Env):
         state.players.is_hand_concealed[cp] = False
 
         state.round_state.draw_next = False
-        state = self._make_legal_action_mask_after_draw(state)
+        state.legal_action_mask = self._make_legal_action_mask_after_draw(state)
         state.current_player = cp
         return state
 
@@ -743,10 +905,9 @@ class RedMahjong(Env):
         cp = state.current_player
         target = state.round_state.target
 
-        # Set furiten_by_pass for players who passed on a ron chance
-        for p in range(4):
-            if p != cp and state.players.legal_action_mask[p, Action.RON]:
-                state.players.furiten_by_pass[p] = True
+        # Set furiten_by_pass for current player if they passed on a ron chance
+        if state.players.legal_action_mask[cp, Action.RON]:
+            state.players.furiten_by_pass[cp] = True
 
         # Find next player with a valid meld/ron action
         mask_4p = state.players.legal_action_mask
@@ -766,8 +927,7 @@ class RedMahjong(Env):
             if state.round_state.is_abortive_draw_normal:
                 state = self._abortive_draw_normal(state)
             else:
-                state = self._draw(state)
-                state = self._make_legal_action_mask_after_draw(state)
+                state = self._draw(state)  # _draw sets legal_action_mask internally
 
         return state
 
@@ -793,23 +953,23 @@ class RedMahjong(Env):
     # ═════════════════════════════════════════════════════════════
 
     def _flip_dora(self, state):
-        """Flip the next dora indicator after a kan."""
-        n_dora = state.round_state.n_kan_doras
-        dora_idx = int(state.round_state.last_deck_ix) - n_dora - 1
-        if dora_idx >= 0 and n_dora < MAX_DORA_INDICATORS:
+        """Flip the next dora indicator after a kan (matches JAX deck indexing)."""
+        n_dora = int(state.round_state.n_kan_doras)
+        dora_idx = 9 - 2 * n_dora        # deck[9], deck[7], deck[5], deck[3], deck[1]
+        ura_idx = 8 - 2 * n_dora         # deck[8], deck[6], deck[4], deck[2], deck[0]
+        if n_dora < MAX_DORA_INDICATORS and dora_idx >= 0:
             state.round_state.dora_indicators[n_dora] = int(state.round_state.deck[dora_idx].item())
-            state.round_state.ura_dora_indicators[n_dora] = int(state.round_state.deck[dora_idx - 1].item())
+            state.round_state.ura_dora_indicators[n_dora] = int(state.round_state.deck[ura_idx].item())
             state.round_state.n_kan_doras += 1
-            state.round_state.last_deck_ix += 1
         return state
 
     def _draw_after_kan(self, state):
         """Draw replacement tile after a kan (rinshan draw)."""
         cp = state.current_player
-        # Draw from end of wall
-        ix = int(state.round_state.last_deck_ix) - 1
+        # Rinshan draw: deck[10 + n_kan] (matching JAX index convention)
+        n_kan = int(state.players.n_kan.sum().item())
+        ix = 10 + n_kan
         tile = int(state.round_state.deck[ix].item())
-        state.round_state.last_deck_ix -= 1
         state.round_state.last_draw = tile
         state.round_state.last_player = cp
         state.round_state.kan_declared = True
@@ -820,7 +980,7 @@ class RedMahjong(Env):
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
 
         state.round_state.draw_next = False
-        state = self._make_legal_action_mask_after_draw(state)
+        state.legal_action_mask = self._make_legal_action_mask_after_draw(state)
         return state
 
     def _abortive_draw_normal(self, state):
@@ -851,29 +1011,66 @@ class RedMahjong(Env):
         return state
 
     def _advance_to_next_round_auto(self, state):
-        """Advance to the next round (auto mode)."""
-        # Determine if dealer stays
-        dealer_won = bool(state.players.has_won[state.round_state.dealer])
-        tenpai = False
-        if not state.players.has_won.any():
-            tenpai = Hand.is_tenpai(Hand.to_34(
-                state.players.hand_with_red[state.round_state.dealer]))
+        """Advance to the next round (auto mode). Matches JAX _advance_to_next_round_auto."""
+        hora = state.players.has_won  # (4,) bool
+        is_tenpai = state.players.can_win.any(dim=-1)  # (4,) bool
+        dealer = int(state.round_state.dealer)
 
-        if dealer_won or tenpai:
-            # Dealer stays
-            state.round_state.honba += 1
-        else:
-            # Dealer rotates
-            state.round_state.dealer = (state.round_state.dealer + 1) % 4
-            state.round_state.round += 1
-            state.round_state.honba = 0
+        # Calculate final score with rank points + kyotaku to top (JAX lines 2171-2177)
+        scores = state.round_state.score.clone().float()
+        order = torch.argsort(-scores)
+        rank_points = torch.zeros(4, dtype=torch.int32)
+        for rank_idx, seat in enumerate(order):
+            rank_points[seat] = state.round_state.order_points[rank_idx]
+        score_with_rank = state.round_state.score + rank_points
+        top_player = int(torch.argmax(score_with_rank).item())
+        final_score = score_with_rank.clone()
+        final_score[top_player] += 10 * int(state.round_state.kyotaku)
 
-        # Check game end
-        if state.round_state.round >= self.round_limit:
-            self._finalize_game(state)
+        # Dealer continuation logic (JAX lines 2179-2183)
+        has_other_than_dealer_won = bool(hora.any().item()) and not bool(hora[dealer].item())
+        is_eight_consecutive = int(state.round_state.honba) >= 8
+        will_dealer_continue = (bool(is_tenpai[dealer].item()) and not has_other_than_dealer_won) \
+            or bool(hora[dealer].item())
+        will_dealer_continue = will_dealer_continue and not is_eight_consecutive
+
+        # Game end conditions (JAX lines 2185-2194)
+        is_final_round = int(state.round_state.round) == int(state.round_state.round_limit)
+        has_dealer_end = not will_dealer_continue
+        top_pre_rank = int(torch.argmax(state.round_state.score).item())
+        is_dealer_top = top_pre_rank == dealer
+        has_minus = bool((state.round_state.score < 0).any().item())
+        is_game_end = (is_final_round and has_dealer_end) or has_minus or (is_final_round and is_dealer_top)
+
+        if is_game_end:
+            # Game over: apply final scores (JAX lines 2224-2227)
+            state.round_state.score = final_score
+            state = self._finalize_game(state)
             return state
 
-        # Reset round state
+        # Next round: dealer/honba/round transition (JAX lines 2196-2210)
+        next_round = int(state.round_state.round) if will_dealer_continue else int(state.round_state.round) + 1
+        next_honba = (int(state.round_state.honba) + 1) if (not bool(hora.any().item()) or will_dealer_continue) else 0
+        next_dealer = dealer if will_dealer_continue else (dealer + 1) % 4
+
+        # Reset per-player round state
+        for p in range(4):
+            state.players.has_won[p] = False
+            state.players.furiten_by_discard[p] = False
+            state.players.furiten_by_pass[p] = False
+            state.players.riichi_declared[p] = False
+            state.players.riichi[p] = False
+            state.players.ippatsu[p] = False
+            state.players.double_riichi[p] = False
+            state.players.n_kan[p] = 0
+            state.players.discard_counts[p] = 0
+            state.players.meld_counts[p] = 0
+            state.players.melds[p].fill_(EMPTY_MELD)
+            state.players.river[p].fill_(EMPTY_RIVER)
+            state.players.is_hand_concealed[p] = True
+        state.players.has_nagashi_mangan.fill_(True)
+
+        # Reset round-level state
         state.round_state.terminated_round = False
         state.round_state.draw_next = True
         state.round_state.dummy_count = 0
@@ -887,54 +1084,36 @@ class RedMahjong(Env):
         state.round_state.last_player = -1
         state.round_state.n_kan_doras = 0
 
-        # Reset per-player round state
-        for p in range(4):
-            state.players.has_won[p] = False
-            state.players.furiten_by_discard[p] = False
-            state.players.furiten_by_pass[p] = False
-            state.players.riichi[p] = False
-            state.players.riichi_declared[p] = False
-            state.players.ippatsu[p] = False
-            state.players.n_kan[p] = 0
-            state.players.discard_counts[p] = 0
-            state.players.meld_counts[p] = 0
-            state.players.melds[p].fill_(EMPTY_MELD)
-            state.players.river[p].fill_(EMPTY_RIVER)
-            state.players.is_hand_concealed[p] = True
+        state.round_state.round = next_round
+        state.round_state.honba = next_honba
+        state.round_state.dealer = next_dealer
+        state.round_state.seat_wind = _calc_wind(next_dealer)
 
-        state.players.has_nagashi_mangan.fill_(True)
-
-        # Seat winds
-        state.round_state.seat_wind = _calc_wind(state.round_state.dealer)
-
-        # Shuffle and deal new round
-        gc = self.game_config
-        deck_values = []
+        # New deck (simplified: random shuffle)
+        deck = torch.zeros(136, dtype=torch.int8)
+        tile_idx = 0
         for t in range(34):
             for _ in range(4):
-                deck_values.append(t)
-        deck = torch.tensor(deck_values, dtype=torch.int8)
+                deck[tile_idx] = t
+                tile_idx += 1
         perm = torch.randperm(136)
         deck = deck[perm]
         state.round_state.deck = deck
         state.round_state.next_deck_ix = FIRST_DRAW_IDX
         state.round_state.last_deck_ix = DEAD_WALL_TILES
+        state.round_state.dora_indicators[0] = int(deck[9].item())
+        state.round_state.ura_dora_indicators[0] = int(deck[8].item())
+        for i in range(1, 5):
+            state.round_state.dora_indicators[i] = -1
+            state.round_state.ura_dora_indicators[i] = -1
 
+        # Deal
         state.players.hand_with_red = Hand.make_init_hand(deck)
         for p in range(4):
             state.players.hand[p] = Hand.to_34(state.players.hand_with_red[p])
 
-        # Init dora indicator
-        state.round_state.dora_indicators.fill_(-1)
-        state.round_state.ura_dora_indicators.fill_(-1)
-        dora_ix = int(state.round_state.last_deck_ix)
-        state.round_state.dora_indicators[0] = int(deck[dora_ix].item())
-        state.round_state.ura_dora_indicators[0] = int(deck[dora_ix - 1].item())
-
-        state.current_player = state.round_state.dealer
+        state.current_player = next_dealer
         state = self._draw(state)
-        state = self._make_legal_action_mask_after_draw(state)
-
         return state
 
     def _finalize_game(self, state):
