@@ -278,11 +278,15 @@ def train_ppo(
                     log_prob = dist.log_prob(action)
                 t_net += time.time() - _t0
 
-                # Env step
+                # Env step (with profiling on first update, step 0)
                 _t0 = time.time()
                 g = torch.Generator().manual_seed(
                     seed + update_idx * 100000 + t * num_envs + i)
-                next_s = step_fn(s, int(action.item()), g)
+                do_profile = (update_idx == 0 and t == 0)  # profile first step only
+                next_s = step_fn(s, int(action.item()), g, profile=do_profile)
+                if do_profile and hasattr(next_s, '_profile'):
+                    for k, v in next_s._profile.items():
+                        logger.info(f"    env.step profile: {k:15s} = {v*1000:.1f}ms")
                 t_step += time.time() - _t0
 
                 _t0 = time.time()

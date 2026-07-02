@@ -297,10 +297,14 @@ class RedMahjong(Env):
     # STEP
     # ═════════════════════════════════════════════════════════════
 
-    def step(self, state: EnvState, action, key=None):
+    def step(self, state: EnvState, action, key=None, profile=False):
         """Execute one step in the environment."""
         gc = self.game_config
         action = int(action) if isinstance(action, (torch.Tensor, np.generic)) else action
+
+        if profile:
+            import time as _time
+            _t = {}
 
         # Check if terminated
         if state.terminated:
@@ -318,41 +322,68 @@ class RedMahjong(Env):
         is_terminal_before = state.terminated
 
         if action < Tile.NUM_TILE_TYPE_WITH_RED:
-            # Discard (0..36)
+            if profile: _t0 = _time.time()
             state = self._discard(state, action)
+            if profile: _t['discard'] = _time.time() - _t0
         elif Action.is_selfkan(action):
-            # Closed / Added kan (action 37..70 → tile_type = action - 37)
+            if profile: _t0 = _time.time()
             tile_type = action - 37
             is_added = Hand.can_added_kan(
                 state.players.hand_with_red[state.current_player], tile_type)
             state = self._selfkan(state, action, is_added)
+            if profile: _t['selfkan'] = _time.time() - _t0
         elif action == Action.TSUMOGIRI:
+            if profile: _t0 = _time.time()
             state = self._discard(state, state.round_state.last_draw)
+            if profile: _t['discard'] = _t.get('discard', 0) + _time.time() - _t0
         elif action == Action.RIICHI:
+            if profile: _t0 = _time.time()
             state = self._riichi(state)
+            if profile: _t['riichi'] = _time.time() - _t0
         elif action == Action.RON:
+            if profile: _t0 = _time.time()
             state = self._ron(state)
+            if profile: _t['ron'] = _time.time() - _t0
         elif action == Action.TSUMO:
+            if profile: _t0 = _time.time()
             state = self._tsumo(state)
+            if profile: _t['tsumo'] = _time.time() - _t0
         elif action in (Action.PON, Action.PON_RED):
+            if profile: _t0 = _time.time()
             state = self._pon(state, action)
+            if profile: _t['pon'] = _time.time() - _t0
         elif action == Action.OPEN_KAN:
+            if profile: _t0 = _time.time()
             state = self._open_kan(state)
+            if profile: _t['open_kan'] = _time.time() - _t0
         elif Action.CHI_L <= action <= Action.CHI_R_RED:
+            if profile: _t0 = _time.time()
             state = self._chi(state, action)
+            if profile: _t['chi'] = _time.time() - _t0
         elif action == Action.PASS:
+            if profile: _t0 = _time.time()
             state = self._pass(state)
+            if profile: _t['pass'] = _time.time() - _t0
         elif action == Action.KYUUSHU:
+            if profile: _t0 = _time.time()
             state = self._kyuushu(state)
+            if profile: _t['kyuushu'] = _time.time() - _t0
         elif action == Action.DUMMY:
+            if profile: _t0 = _time.time()
             state = self._dummy(state)
+            if profile: _t['dummy'] = _time.time() - _t0
 
         state.step_count += 1
 
         # Auto round transition
         if self.next_round_style == "auto" and not self.one_round and not is_terminal_before:
             if state.round_state.terminated_round and not state.terminated:
+                if profile: _t0 = _time.time()
                 state = self._advance_to_next_round_auto(state)
+                if profile: _t['advance'] = _time.time() - _t0
+
+        if profile:
+            state._profile = _t
 
         return state
 

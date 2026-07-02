@@ -18,7 +18,7 @@ def auto_reset(step_fn, init_fn):
         wrapped_step_fn(state, action, key) -> state
     """
 
-    def wrapped_step_fn(state, action, key=None):
+    def wrapped_step_fn(state, action, key=None, **kwargs):
         # If state is already terminated, clear flags before stepping
         if state.terminated or state.truncated:
             state.terminated = False
@@ -26,7 +26,7 @@ def auto_reset(step_fn, init_fn):
             state.rewards.zero_()
 
         # Execute the step
-        state = step_fn(state, action, key)
+        state = step_fn(state, action, key, **kwargs)
 
         # If the step produced a terminal state, transition to a fresh one
         if state.terminated or state.truncated:
