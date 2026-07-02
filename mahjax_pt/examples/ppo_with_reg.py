@@ -186,8 +186,14 @@ def train_ppo(
     save_model=True,
     eval_interval=10,
     eval_num_envs=100,
+    device=None,
 ):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+    if device.type == "npu":
+        import torch_npu
 
     if pretrained_model_path is None:
         pretrained_model_path = default_bc_params_path(env_name)
@@ -459,5 +465,6 @@ if __name__ == "__main__":
     parser.add_argument("--total_timesteps", type=int, default=100_000)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--pretrained_model_path", default=None)
+    parser.add_argument("--device", default=None, help="cpu, cuda:0, npu:0")
     args = parser.parse_args()
     train_ppo(**vars(args))

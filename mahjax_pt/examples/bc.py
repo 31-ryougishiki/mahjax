@@ -31,13 +31,19 @@ def train_bc(
     val_split=0.1,
     save_model_path=None,
     viz_out_dir=None,
+    device=None,
 ):
     if dataset_path is None:
         dataset_path = default_dataset_path(env_name)
     if save_model_path is None:
         save_model_path = default_bc_params_path(env_name)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+    if device.type == "npu":
+        import torch_npu
     print(f"Using device: {device}")
 
     # 1. Load data
@@ -156,5 +162,6 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_model_path", default=None)
+    parser.add_argument("--device", default=None, help="cpu, cuda:0, npu:0")
     args = parser.parse_args()
     train_bc(**vars(args))
