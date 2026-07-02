@@ -247,29 +247,27 @@ def train_ppo(
         # ── 1. Collect Rollout ──
         network.eval()
         for t in range(num_steps):
-            if t > 0 and t % 8 == 0:
-                logger.debug(f"  rollout step {t}/{num_steps}")
+            step_t0 = time.time()
+            obs_batch = []; actions_b = []; log_probs_b = []; values_b = []
+            rewards_b = []; dones_b = []; cps_b = []; masks_b = []
 
-            for i in range(num_envs):
-                env_t0 = time.time()
-            obs_batch = []
-            actions = []
-            log_probs_b = []
-            values_b = []
-            rewards_b = []
-            dones_b = []
-            cps = []
-            masks_b = []
+            # Per-env timing accumulators
+            t_obs, t_net, t_step, t_mask = 0.0, 0.0, 0.0, 0.0
 
             for i in range(num_envs):
                 s = states[i]
+
+                _t0 = time.time()
                 obs = env.observe(s)
+                t_obs += time.time() - _t0
+
                 obs_batch.append(obs)
-                mask = s.legal_action_mask.to(device)
+                mask = s.legal_action_mask
                 cp = s.current_player
                 done = s.terminated or s.truncated
 
-                # Move hand+action_history to device for network forward
+                # Network forward (separate timing because it's on NPU)
+                _t0 = time.time()
                 obs_dev = {k: v.to(device) for k, v in obs.items()}
                 mask_dev = mask.to(device)
                 with torch.no_grad():
@@ -278,36 +276,44 @@ def train_ppo(
                     dist = torch.distributions.Categorical(logits=logits)
                     action = dist.sample()
                     log_prob = dist.log_prob(action)
+                t_net += time.time() - _t0
 
+                # Env step
+                _t0 = time.time()
                 g = torch.Generator().manual_seed(
                     seed + update_idx * 100000 + t * num_envs + i)
-                step_t0 = time.time()
                 next_s = step_fn(s, int(action.item()), g)
-                step_elapsed = time.time() - step_t0
-                if step_elapsed > 1.0:
-                    logger.warning(f"  SLOW env step: {step_elapsed:.1f}s "
-                                   f"update={update_idx} t={t} env={i} action={int(action.item())}")
+                t_step += time.time() - _t0
+
+                _t0 = time.time()
+                masks_b.append(mask.cpu())
+                t_mask += time.time() - _t0
 
                 reward = next_s.rewards.clone() / MAX_REWARD
-
                 states[i] = next_s
-                actions.append(int(action.item()))
+                actions_b.append(int(action.item()))
                 log_probs_b.append(float(log_prob.item()))
                 values_b.append(float(value.item()))
                 rewards_b.append(reward)
-                # Only mark as done on the step AFTER terminal (pre-step terminated=True), matching JAX is_new_episode
                 dones_b.append(bool(done))
-                cps.append(cp)
-                masks_b.append(mask.cpu())
+                cps_b.append(cp)
 
             buffer.observations.append(obs_batch)
-            buffer.actions.append(actions)
+            buffer.actions.append(actions_b)
             buffer.log_probs.append(log_probs_b)
             buffer.values.append(values_b)
             buffer.rewards.append(rewards_b)
             buffer.dones.append(dones_b)
-            buffer.current_players.append(cps)
+            buffer.current_players.append(cps_b)
             buffer.action_masks.append(masks_b)
+
+            # Log per-step timing every 16 steps
+            if t > 0 and t % 16 == 0:
+                step_total = time.time() - step_t0
+                logger.info(f"  rollout step {t:3d}/{num_steps}: "
+                            f"obs={t_obs*1000:.1f}ms net={t_net*1000:.1f}ms "
+                            f"step={t_step*1000:.1f}ms total={step_total*1000:.0f}ms")
+
 
         rollout_elapsed = time.time() - t_start
         logger.info(f"  Rollout done in {rollout_elapsed:.1f}s, computing GAE...")
