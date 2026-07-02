@@ -8,10 +8,15 @@ import os
 import sys
 import time
 import pickle
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
+                    datefmt="%H:%M:%S")
+logger = logging.getLogger("ppo")
 
 from mahjax_pt.red_mahjong.env import make as make_env
 from mahjax_pt.red_mahjong.auto_reset_wrapper import auto_reset
@@ -182,7 +187,6 @@ def train_ppo(
     eval_num_envs=100,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
 
     if pretrained_model_path is None:
         pretrained_model_path = default_bc_params_path(env_name)
@@ -193,6 +197,9 @@ def train_ppo(
     NUM_PLAYERS = env.num_players
     NUM_ACTIONS = env.num_actions
     BATCH_SIZE = num_envs * num_steps
+    logger.info(f"Device: {device}, env={env_name}, round={round_mode}, seed={seed}")
+    logger.info(f"Config: num_envs={num_envs}, num_steps={num_steps}, "
+                f"total_timesteps={total_timesteps}, lr={lr}, batch={BATCH_SIZE}")
 
     # Network
     net_cls = get_network_cls(env_name)
@@ -201,7 +208,7 @@ def train_ppo(
 
     # Load BC params for both baseline and magnet
     if os.path.exists(pretrained_model_path):
-        print(f"Loading BC params: {pretrained_model_path}")
+        logger.info(f"Loading BC params: {pretrained_model_path}")
         network.load_state_dict(torch.load(pretrained_model_path, map_location=device))
         baseline_net = net_cls().to(device)
         baseline_net.load_state_dict(network.state_dict())
@@ -212,28 +219,39 @@ def train_ppo(
         for p in magnet_net.parameters():
             p.requires_grad = False
     else:
-        print(f"Warning: BC params not found at {pretrained_model_path}, training from scratch")
+        logger.warning(f"BC params not found at {pretrained_model_path}, training from scratch")
         baseline_net = None
         magnet_net = None
 
     optimizer = torch.optim.AdamW(network.parameters(), lr=lr, eps=1e-5, weight_decay=0.0)
 
     # Env init
+    logger.info(f"Initializing {num_envs} env(s) with seed={seed}")
     gen = torch.Generator().manual_seed(seed)
     states = []
     for i in range(num_envs):
         g = torch.Generator().manual_seed(seed + i + 1000)
-        states.append(env.init(g))
+        s = env.init(g)
+        states.append(s)
+        logger.debug(f"  Env {i}: cp={s.current_player}, n_legal={s.legal_action_mask.sum().item()}")
 
     num_updates = total_timesteps // BATCH_SIZE
+    logger.info(f"Training: {num_updates} updates, batch={BATCH_SIZE}, minibatch={minibatch_size}")
     buffer = PPOBuffer(num_steps, num_envs)
 
     for update_idx in range(num_updates):
+        logger.info(f"Update {update_idx+1}/{num_updates}: collecting rollout...")
+        t_start = time.time()
         buffer.reset()
 
         # ── 1. Collect Rollout ──
         network.eval()
         for t in range(num_steps):
+            if t > 0 and t % 8 == 0:
+                logger.debug(f"  rollout step {t}/{num_steps}")
+
+            for i in range(num_envs):
+                env_t0 = time.time()
             obs_batch = []
             actions = []
             log_probs_b = []
@@ -263,7 +281,12 @@ def train_ppo(
 
                 g = torch.Generator().manual_seed(
                     seed + update_idx * 100000 + t * num_envs + i)
+                step_t0 = time.time()
                 next_s = step_fn(s, int(action.item()), g)
+                step_elapsed = time.time() - step_t0
+                if step_elapsed > 1.0:
+                    logger.warning(f"  SLOW env step: {step_elapsed:.1f}s "
+                                   f"update={update_idx} t={t} env={i} action={int(action.item())}")
 
                 reward = next_s.rewards.clone() / MAX_REWARD
 
@@ -286,7 +309,11 @@ def train_ppo(
             buffer.current_players.append(cps)
             buffer.action_masks.append(masks_b)
 
+        rollout_elapsed = time.time() - t_start
+        logger.info(f"  Rollout done in {rollout_elapsed:.1f}s, computing GAE...")
+
         # ── 2. GAE ──
+        t0 = time.time()
         obs_stack, acts, log_probs, values, rewards, dones, cps, masks = buffer.get_batch()
         advantages, targets, valid_mask = compute_gae(
             rewards, values, dones, cps, gamma, gae_lambda)
@@ -308,8 +335,11 @@ def train_ppo(
         targets_flat = targets.reshape(-1, NUM_PLAYERS)
         valid_mask_flat = valid_mask.reshape(-1, NUM_PLAYERS)
         masks_flat = masks.reshape(-1, NUM_ACTIONS)
+        gae_elapsed = time.time() - t0
+        logger.info(f"  GAE done in {gae_elapsed:.1f}s, starting PPO update...")
 
         # ── 3. PPO Update ──
+        t0 = time.time()
         network.train()
         for epoch in range(update_epochs):
             perm = torch.randperm(T * B)
@@ -365,9 +395,13 @@ def train_ppo(
                 loss.backward()
                 optimizer.step()
 
+        update_elapsed = time.time() - t0
+        logger.info(f"  Update done in {update_elapsed:.1f}s "
+                    f"(total: {time.time()-t_start:.1f}s)")
+
         # ── Logging ──
         avg_reward = rewards.mean().item() * MAX_REWARD
-        print(f"Update {update_idx + 1}/{num_updates} | "
+        logger.info(f"Update {update_idx + 1}/{num_updates} | "
               f"avg_reward: {avg_reward:.2f} | "
               f"loss: {loss.item():.4f} | "
               f"entropy: {masked_mean(entropy.unsqueeze(-1), vmask).item():.4f}")
