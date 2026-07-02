@@ -193,3 +193,19 @@ class River:
         empty = river == EMPTY_RIVER
         tile = (river & _TILE_MASK).to(torch.int32)
         return torch.where(empty, torch.tensor(-1, dtype=torch.int32), tile)
+
+    @staticmethod
+    def add_discard_batch(rivers, tiles, players, idxs, is_tsumogiri, is_riichi):
+        """Batch version: rivers=(B,4,24), tiles=(B,), players=(B,), idxs=(B,)."""
+        B = rivers.shape[0]
+        for b in range(B):
+            t = int(tiles[b].item()) if isinstance(tiles[b], torch.Tensor) else int(tiles[b])
+            p = int(players[b].item()) if isinstance(players[b], torch.Tensor) else int(players[b])
+            d = int(idxs[b].item()) if isinstance(idxs[b], torch.Tensor) else int(idxs[b])
+            ts = bool(is_tsumogiri[b].item()) if isinstance(is_tsumogiri[b], torch.Tensor) else bool(is_tsumogiri[b])
+            ri = bool(is_riichi[b].item()) if isinstance(is_riichi[b], torch.Tensor) else bool(is_riichi[b])
+            tile_u16 = (t & 0b111111)
+            if ts: tile_u16 |= (1 << 8)
+            if ri: tile_u16 |= (1 << 6)
+            rivers[b, p, d] = tile_u16
+        return rivers

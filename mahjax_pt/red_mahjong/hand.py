@@ -418,3 +418,24 @@ class Hand:
         for b in range(B):
             results[b] = Hand.can_open_kan(hands[b], int(tiles[b].item()))
         return results
+
+    @staticmethod
+    def to_34_batch(hands):
+        """hands: (B, 37) or (B, 34) — batch to_34."""
+        if hands.shape[1] == Tile.NUM_TILE_TYPE:
+            return hands
+        B = hands.shape[0]
+        out = hands[:, :Tile.NUM_TILE_TYPE].clone()
+        out[:, Tile.BLACK_FIVE["m"]] += hands[:, Tile.RED_FIVE["m"]]
+        out[:, Tile.BLACK_FIVE["p"]] += hands[:, Tile.RED_FIVE["p"]]
+        out[:, Tile.BLACK_FIVE["s"]] += hands[:, Tile.RED_FIVE["s"]]
+        return out
+
+    @staticmethod
+    def is_tenpai_batch(hands_34):
+        """hands_34: (B, 34) — batch tenpai check."""
+        B = hands_34.shape[0]
+        results = torch.zeros(B, dtype=torch.bool)
+        for b in range(B):
+            results[b] = Hand.is_tenpai(hands_34[b])
+        return results
