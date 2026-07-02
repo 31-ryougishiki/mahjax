@@ -388,13 +388,14 @@ class RedMahjong(Env):
         return state
 
     def _draw_batch(self, states, indices, profile=False):
-        """Batch draw for multiple envs — skips rare abortive draw checks."""
+        """Batch draw: accept riichi, draw, build FULL masks in one pass."""
         import time as _time
         _t_start = _time.time() if profile else 0
-        _t_mask = _t_shanten = 0.0
 
-        # 1+2: Accept riichi + draw tile (fast, one pass)
-        for i in indices:
+        # Pre-allocate mask tensors to avoid per-env allocation overhead
+        masks = [None] * len(indices)
+
+        for j, i in enumerate(indices):
             states[i] = _accept_riichi(states[i])
             cp = states[i].current_player
             is_haitei = int(states[i].round_state.next_deck_ix) == int(states[i].round_state.last_deck_ix)
@@ -407,31 +408,52 @@ class RedMahjong(Env):
             states[i].players.hand_with_red[cp] = Hand.add(states[i].players.hand_with_red[cp], new_tile)
             states[i].players.hand[cp] = Hand.to_34(states[i].players.hand_with_red[cp])
 
-            # Build mask (the expensive part)
-            if profile: _t0 = _time.time()
-            if bool(states[i].players.riichi[cp].item()):
-                mask = self._make_legal_action_mask_after_draw_riichi(states[i], cp)
-            else:
-                mask = self._make_legal_action_mask_after_draw(states[i])
-            if profile: _t_mask += _time.time() - _t0
+            # Build mask inline (avoid function call overhead)
+            hand = states[i].players.hand_with_red[cp]
+            mask = torch.zeros(LEGAL_ACTION_SIZE, dtype=torch.bool)
+            # Discard
+            mask[:Tile.NUM_TILE_TYPE_WITH_RED] = (hand > 0)
+            mask[Action.TSUMOGIRI] = True
+            # Kan
+            if not is_haitei and int(states[i].players.n_kan.sum().item()) < 4:
+                for t in range(34):
+                    if Hand.can_closed_kan(hand, t):
+                        mask[37 + t] = True
+                    n_melds = int(states[i].players.meld_counts[cp].item())
+                    for m_idx in range(n_melds):
+                        m = int(states[i].players.melds[cp, m_idx].item())
+                        if m != EMPTY_MELD and Meld.is_pon(m) and Meld.target(m) == t:
+                            if Hand.can_added_kan(hand, t):
+                                mask[37 + t] = True
+            # Tsumo
+            if Hand.can_tsumo(hand):
+                mask[Action.TSUMO] = True
+            # Riichi
+            nxt = int(states[i].round_state.next_deck_ix)
+            lst = int(states[i].round_state.last_deck_ix)
+            if (not states[i].players.riichi[cp]
+                and states[i].round_state.score[cp] >= RIICHI_BET // 100
+                and states[i].players.is_hand_concealed[cp]
+                and nxt - lst >= 4
+                and Hand.can_riichi(hand)):
+                mask[Action.RIICHI] = True
+            # Kyuushu
+            if _is_first_turn(nxt) and Hand.can_kyuushu(hand):
+                mask[Action.KYUUSHU] = True
+
             states[i].legal_action_mask = mask
             states[i].round_state.draw_next = False
             states[i].round_state.kan_declared = False
             states[i].round_state.target = -1
-
-            # Shanten + furiten_pass
-            if profile: _t0 = _time.time()
             states[i].round_state.shanten_current_player = Shanten.number(
                 Hand.to_34(states[i].players.hand_with_red[cp]))
             if not bool(states[i].players.riichi[cp].item()):
                 states[i].players.furiten_by_pass[cp] = False
-            if profile: _t_shanten += _time.time() - _t0
 
         if profile:
             import logging; _log = logging.getLogger("ppo")
             _log.info(f"    _draw_batch profile (B={len(indices)}): "
-                      f"mask={_t_mask*1000:.0f}ms shanten={_t_shanten*1000:.0f}ms "
-                      f"total={(_time.time()-_t_start)*1000:.0f}ms")
+                      f"total={1000*(_time.time()-_t_start):.0f}ms (full mask)")
 
         return states
 
