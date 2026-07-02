@@ -387,41 +387,51 @@ class RedMahjong(Env):
 
         return state
 
-    def _draw_batch(self, states, indices):
+    def _draw_batch(self, states, indices, profile=False):
         """Batch draw for multiple envs — skips rare abortive draw checks."""
-        # 1. Accept pending riichi for each env
+        import time as _time
+        _t_start = _time.time() if profile else 0
+        _t_mask = _t_shanten = 0.0
+
+        # 1+2: Accept riichi + draw tile (fast, one pass)
         for i in indices:
             states[i] = _accept_riichi(states[i])
-
-        # 2. Draw: move deck pointer + add tile + build mask
-        for i in indices:
             cp = states[i].current_player
             is_haitei = int(states[i].round_state.next_deck_ix) == int(states[i].round_state.last_deck_ix)
             states[i].round_state.is_haitei = is_haitei
-
             ix = int(states[i].round_state.next_deck_ix)
             new_tile = int(states[i].round_state.deck[ix].item())
             states[i].round_state.next_deck_ix = ix - 1
             states[i].round_state.last_draw = new_tile
             states[i].round_state.last_player = cp
-
             states[i].players.hand_with_red[cp] = Hand.add(states[i].players.hand_with_red[cp], new_tile)
             states[i].players.hand[cp] = Hand.to_34(states[i].players.hand_with_red[cp])
 
-            # Build legal action mask
+            # Build mask (the expensive part)
+            if profile: _t0 = _time.time()
             if bool(states[i].players.riichi[cp].item()):
                 mask = self._make_legal_action_mask_after_draw_riichi(states[i], cp)
             else:
                 mask = self._make_legal_action_mask_after_draw(states[i])
+            if profile: _t_mask += _time.time() - _t0
             states[i].legal_action_mask = mask
             states[i].round_state.draw_next = False
             states[i].round_state.kan_declared = False
             states[i].round_state.target = -1
+
+            # Shanten + furiten_pass
+            if profile: _t0 = _time.time()
             states[i].round_state.shanten_current_player = Shanten.number(
                 Hand.to_34(states[i].players.hand_with_red[cp]))
-
             if not bool(states[i].players.riichi[cp].item()):
                 states[i].players.furiten_by_pass[cp] = False
+            if profile: _t_shanten += _time.time() - _t0
+
+        if profile:
+            import logging; _log = logging.getLogger("ppo")
+            _log.info(f"    _draw_batch profile (B={len(indices)}): "
+                      f"mask={_t_mask*1000:.0f}ms shanten={_t_shanten*1000:.0f}ms "
+                      f"total={(_time.time()-_t_start)*1000:.0f}ms")
 
         return states
 
@@ -1374,7 +1384,7 @@ class RedMahjong(Env):
 
         # Batch draw
         if need_draw:
-            states = self._draw_batch(states, need_draw)
+            states = self._draw_batch(states, need_draw, profile=profile)
 
         if profile:
             _t['4_next_player'] = _time.time() - _t0
