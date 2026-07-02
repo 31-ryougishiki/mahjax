@@ -585,7 +585,8 @@ class RedMahjong(Env):
             src = (discarded_player - p) % 4
 
             is_riichi = bool(state.players.riichi[p].item())
-            cannot_meld = is_riichi or haitei
+            meld_full = int(state.players.meld_counts[p].item()) >= MAX_MELDS_PER_PLAYER
+            cannot_meld = is_riichi or haitei or meld_full
             cannot_kan = int(state.players.n_kan.sum().item()) >= 4
 
             m = mask_4p[p]
@@ -818,6 +819,9 @@ class RedMahjong(Env):
         hand = state.players.hand_with_red[cp]
         src = state.round_state.last_player
 
+        if int(state.players.meld_counts[cp].item()) >= MAX_MELDS_PER_PLAYER:
+            return state
+
         # Pack meld
         meld = Meld.init(action, target, 1)  # src=1 means from right player (relative)
         _append_meld_to_player(state, meld, cp, int(state.players.discard_counts[src].item()) - 1, src)
@@ -840,6 +844,9 @@ class RedMahjong(Env):
         discarded_player = state.round_state.last_player
         hand = state.players.hand_with_red[cp]
         src = (discarded_player - cp) % 4
+
+        if int(state.players.meld_counts[cp].item()) >= MAX_MELDS_PER_PLAYER:
+            return state
 
         meld = Meld.init(Action.OPEN_KAN, target, src)
         # _append_meld handles river update
@@ -885,6 +892,10 @@ class RedMahjong(Env):
         target = state.round_state.target
         hand = state.players.hand_with_red[cp]
         src = state.round_state.last_player
+
+        # Safety: can't chi if already at meld limit
+        if int(state.players.meld_counts[cp].item()) >= MAX_MELDS_PER_PLAYER:
+            return state
 
         meld = Meld.init(action, target, 1)
         _append_meld_to_player(state, meld, cp, int(state.players.discard_counts[src].item()) - 1, src)

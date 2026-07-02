@@ -403,8 +403,12 @@ def train_ppo(
         avg_reward = rewards.mean().item() * MAX_REWARD
         n_nonzero = int((rewards != 0).sum().item())
         n_total = int(rewards.numel())
+        rew_abs_mean = rewards.abs().mean().item() * MAX_REWARD  # avg reward magnitude
+        rew_max = rewards.max().item() * MAX_REWARD
+        rew_min = rewards.min().item() * MAX_REWARD
         logger.info(f"Update {update_idx + 1}/{num_updates} | "
-              f"avg_reward: {avg_reward:.6f} (nonzero={n_nonzero}/{n_total}) | "
+              f"reward: mean={avg_reward:.3f} abs_mean={rew_abs_mean:.2f} "
+              f"max={rew_max:.0f} min={rew_min:.0f} (nonzero={n_nonzero}/{n_total}) | "
               f"loss: {loss.item():.4f} | "
               f"entropy: {masked_mean(entropy.unsqueeze(-1), vmask).item():.4f}")
 
