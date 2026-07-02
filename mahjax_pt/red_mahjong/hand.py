@@ -238,14 +238,17 @@ class Hand:
 
     @staticmethod
     def can_riichi(hand):
-        if hand.shape[0] == Tile.NUM_TILE_TYPE_WITH_RED:
-            n_types = Tile.NUM_TILE_TYPE_WITH_RED
-        else:
-            n_types = Tile.NUM_TILE_TYPE
-        for i in range(n_types):
-            if hand[i] != 0 and Hand.is_tenpai(Hand.sub(hand, i)):
-                return True
-        return False
+        """Check if any discard leaves a tenpai hand.
+
+        Uses Shanten.discard which computes shanten for all 34 tiles in one pass
+        (O(34) instead of O(34×37) via nested loops).
+        """
+        from .shanten import Shanten
+        h34 = Hand.to_34(hand)
+        discards = Shanten.discard(h34)  # (34,) shanten after discarding each tile
+        # shanten <= 0 means tenpai or complete after discard
+        # Only consider tiles we actually have
+        return bool(((discards <= 0) & (h34 > 0)).any().item())
 
     @staticmethod
     def can_kyuushu(hand):

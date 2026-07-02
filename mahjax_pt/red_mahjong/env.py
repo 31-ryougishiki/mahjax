@@ -575,45 +575,43 @@ class RedMahjong(Env):
             (int(state.round_state.next_deck_ix) < int(state.round_state.last_deck_ix))
 
         mask_4p = ZERO_MASK_2D.clone()
+        target_tt = Tile.to_tile_type(target)  # compute once
+        target_is_honor = target_tt >= 27      # skip chi for honors
 
         for p in range(4):
             if p == discarded_player:
                 continue
             hand = state.players.hand_with_red[p]
-            src = (discarded_player - p) % 4  # relative position
+            src = (discarded_player - p) % 4
 
-            # Restrictions (JAX lines 1067-1070)
             is_riichi = bool(state.players.riichi[p].item())
             cannot_meld = is_riichi or haitei
             cannot_kan = int(state.players.n_kan.sum().item()) >= 4
 
             m = mask_4p[p]
 
-            # Chi: only from left player (src==3), not when cannot_meld (JAX lines 1074-1076)
-            if not cannot_meld and src == 3:
+            # Chi: only from left, not honor, not when cannot_meld
+            if not cannot_meld and src == 3 and not target_is_honor:
                 for chi_a in CHI_ACTIONS:
-                    a = int(chi_a.item())
-                    if Hand.can_chi(hand, target, a):
-                        m[a] = True
+                    if Hand.can_chi(hand, target, int(chi_a.item())):
+                        m[int(chi_a.item())] = True
 
-            # Pon / Open Kan: not when cannot_meld or cannot_kan (JAX lines 1077, 1099-1107)
+            # Pon / Open Kan: skip if hand definitely doesn't have target
             if not cannot_meld:
-                if Hand.can_no_red_pon(hand, target):
-                    m[Action.PON] = True
-                if Hand.can_red_pon(hand, target):
-                    m[Action.PON_RED] = True
-                if Hand.can_open_kan(hand, target) and not cannot_kan:
-                    m[Action.OPEN_KAN] = True
+                h34 = Hand.to_34(hand)  # reuse for all checks
+                if h34[target_tt] >= 2:
+                    if Hand.can_no_red_pon(hand, target): m[Action.PON] = True
+                    if Hand.can_red_pon(hand, target): m[Action.PON_RED] = True
+                if h34[target_tt] >= 3 and not cannot_kan:
+                    if Hand.can_open_kan(hand, target): m[Action.OPEN_KAN] = True
 
-            # Ron: needs yaku + not furiten (JAX lines 1078-1083)
-            can_ron = Hand.can_ron(hand, target)
+            # Ron
             has_yaku = bool(state.players.has_yaku[p, 0].item())
-            is_furiten = bool(state.players.furiten_by_discard[p] | state.players.furiten_by_pass[p])
-            ron_ok = (has_yaku or haitei) and can_ron and not is_furiten
-            if ron_ok:
-                m[Action.RON] = True
+            if has_yaku or haitei:
+                is_furiten = bool(state.players.furiten_by_discard[p] | state.players.furiten_by_pass[p])
+                if not is_furiten and Hand.can_ron(hand, target):
+                    m[Action.RON] = True
 
-            # PASS is always legal if any action is available
             if m.any():
                 m[Action.PASS] = True
 
