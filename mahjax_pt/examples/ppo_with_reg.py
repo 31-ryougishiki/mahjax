@@ -246,13 +246,12 @@ def train_ppo(
 
         # ── 1. Collect Rollout ──
         network.eval()
+        # Timing accumulators reset every 16 steps
+        block_t0 = time.time()
+        t_obs, t_net, t_step = 0.0, 0.0, 0.0
         for t in range(num_steps):
-            step_t0 = time.time()
             obs_batch = []; actions_b = []; log_probs_b = []; values_b = []
             rewards_b = []; dones_b = []; cps_b = []; masks_b = []
-
-            # Per-env timing accumulators
-            t_obs, t_net, t_step, t_mask = 0.0, 0.0, 0.0, 0.0
 
             for i in range(num_envs):
                 s = states[i]
@@ -266,7 +265,7 @@ def train_ppo(
                 cp = s.current_player
                 done = s.terminated or s.truncated
 
-                # Network forward (separate timing because it's on NPU)
+                # Network forward
                 _t0 = time.time()
                 obs_dev = {k: v.to(device) for k, v in obs.items()}
                 mask_dev = mask.to(device)
@@ -278,21 +277,18 @@ def train_ppo(
                     log_prob = dist.log_prob(action)
                 t_net += time.time() - _t0
 
-                # Env step (with profiling on first update, step 0)
+                # Env step (profile first step only)
                 _t0 = time.time()
                 g = torch.Generator().manual_seed(
                     seed + update_idx * 100000 + t * num_envs + i)
-                do_profile = (update_idx == 0 and t == 0)  # profile first step only
+                do_profile = (update_idx == 0 and t == 0)
                 next_s = step_fn(s, int(action.item()), g, profile=do_profile)
                 if do_profile and hasattr(next_s, '_profile'):
                     for k, v in next_s._profile.items():
                         logger.info(f"    env.step profile: {k:15s} = {v*1000:.1f}ms")
                 t_step += time.time() - _t0
 
-                _t0 = time.time()
                 masks_b.append(mask.cpu())
-                t_mask += time.time() - _t0
-
                 reward = next_s.rewards.clone() / MAX_REWARD
                 states[i] = next_s
                 actions_b.append(int(action.item()))
@@ -311,12 +307,18 @@ def train_ppo(
             buffer.current_players.append(cps_b)
             buffer.action_masks.append(masks_b)
 
-            # Log per-step timing every 16 steps
+            # Log every 16 steps: show avg per step
             if t > 0 and t % 16 == 0:
-                step_total = time.time() - step_t0
+                block_elapsed = time.time() - block_t0
+                n_env_steps = 16 * num_envs
                 logger.info(f"  rollout step {t:3d}/{num_steps}: "
-                            f"obs={t_obs*1000:.1f}ms net={t_net*1000:.1f}ms "
-                            f"step={t_step*1000:.1f}ms total={step_total*1000:.0f}ms")
+                            f"obs={t_obs*1000:.0f}ms net={t_net*1000:.0f}ms "
+                            f"step={t_step*1000:.0f}ms "
+                            f"({n_env_steps} env-calls in {block_elapsed:.1f}s, "
+                            f"avg={block_elapsed*1000/n_env_steps:.1f}ms/env-step)")
+                # Reset accumulators
+                block_t0 = time.time()
+                t_obs = t_net = t_step = 0.0
 
 
         rollout_elapsed = time.time() - t_start
