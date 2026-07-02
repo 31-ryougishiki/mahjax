@@ -401,8 +401,10 @@ def train_ppo(
 
         # ── Logging ──
         avg_reward = rewards.mean().item() * MAX_REWARD
+        n_nonzero = int((rewards != 0).sum().item())
+        n_total = int(rewards.numel())
         logger.info(f"Update {update_idx + 1}/{num_updates} | "
-              f"avg_reward: {avg_reward:.2f} | "
+              f"avg_reward: {avg_reward:.6f} (nonzero={n_nonzero}/{n_total}) | "
               f"loss: {loss.item():.4f} | "
               f"entropy: {masked_mean(entropy.unsqueeze(-1), vmask).item():.4f}")
 
