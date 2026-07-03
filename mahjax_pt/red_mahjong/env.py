@@ -1322,6 +1322,7 @@ class RedMahjong(Env):
 
         Groups envs by action type: discard-batch (~90% of actions) are processed
         in one tensor op; rare actions (ron/tsumo/riichi/kan) fall back to serial.
+        Also handles round transitions for terminated rounds (matches step() behavior).
         """
         import time as _time
         _ts0 = _time.time() if profile else 0
@@ -1335,6 +1336,11 @@ class RedMahjong(Env):
 
         for i, a in enumerate(actions):
             a = int(a) if isinstance(a, (torch.Tensor, np.generic)) else a
+            # Skip actions on already-terminated rounds (treat as dummy)
+            if states[i].round_state.terminated_round and not states[i].terminated:
+                if self.next_round_style == "auto" and not self.one_round:
+                    states[i] = self._advance_to_next_round_auto(states[i])
+                continue
             if a < Tile.NUM_TILE_TYPE_WITH_RED or a == Action.TSUMOGIRI:
                 discard_indices.append(i)
                 discard_actions.append(a)
@@ -1353,6 +1359,12 @@ class RedMahjong(Env):
         # Process rare actions serially
         for idx, action in zip(serial_indices, serial_actions):
             states[idx] = self.step(states[idx], action)
+
+        # ── After all actions: advance any terminated rounds (matches step() behavior) ──
+        if self.next_round_style == "auto" and not self.one_round:
+            for i in range(B):
+                if states[i].round_state.terminated_round and not states[i].terminated:
+                    states[i] = self._advance_to_next_round_auto(states[i])
 
         if profile:
             _t_total = 1000 * (_time.time() - _ts0)
