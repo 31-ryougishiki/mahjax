@@ -1471,18 +1471,38 @@ class RedMahjong(Env):
             states[i].round_state.last_player = cp
         if profile: _t1b = _time.time() - _ta
 
-        # AH update: vectorized — find last valid column, set tsumogiri flag
+        # AH update: vectorized — APPEND new entry (matches JAX _append_action_history)
+        # JAX: uses step_count as index, stores [current_player, action, tsumogiri_flag]
+        # Batch: find first empty slot, write [cp, action_value, tsumogiri_flag]
         _ta = _time.time() if profile else 0
         ah_b = torch.stack([states[i].round_state.action_history.clone() for i in indices])  # (B, 3, 200)
-        valid_entries = ah_b[:, 0, :] != -1  # (B, 200)
-        # Find last valid col using argmax on reversed mask
-        flipped = torch.flip(valid_entries.int(), [1])  # (B, 200)
-        first_in_rev = flipped.argmax(dim=1)  # (B,) — argmax returns 0 if all False
-        has_valid = valid_entries.any(dim=1)  # (B,)
-        col_idx = torch.where(has_valid, 199 - first_in_rev, torch.tensor(0, device=device))  # (B,)
-        is_tsumo_v = (tiles == last_draws)  # (B,)
-        ah_b[b_idx_full, 2, col_idx] = torch.where(
-            is_tsumo_v, torch.tensor(1, dtype=torch.int8), torch.tensor(0, dtype=torch.int8))
+
+        # Find first empty slot (where row 0 == -1)
+        is_empty = ah_b[:, 0, :] == -1  # (B, 200)
+        empty_exists = is_empty.any(dim=1)  # (B,)
+        first_empty = is_empty.int().argmax(dim=1)  # (B,) — 0 if no empty slot
+
+        # For envs with no empty slot (AH full, extremely rare): shift left by 1
+        full_envs = ~empty_exists  # (B,)
+        if full_envs.any():
+            full_idx = b_idx_full[full_envs]
+            ah_b[full_idx, :, :-1] = ah_b[full_idx, :, 1:].clone()
+            first_empty = torch.where(full_envs, torch.tensor(199, device=device), first_empty)
+
+        # Action value: store the real action ID (matching PyTorch serial _append_action_history)
+        # For true tsumogiri (action==71): store 71; for normal discard: store tile index (0-36)
+        # Note: is_tsumo_flags is True for ANY discard where tile==last_draw (including coincidental
+        # manual discards), so we check the raw action instead.
+        is_true_tsumo = torch.tensor([actions[j] == Action.TSUMOGIRI for j in range(B)],
+                                     dtype=torch.bool, device=device)
+        action_vals = tiles.clone()
+        action_vals[is_true_tsumo] = Action.TSUMOGIRI
+        tsumo_ints = is_tsumo_flags.to(torch.int8)  # (B,) 1 for tsumogiri, 0 for normal
+
+        ah_b[b_idx_full, 0, first_empty] = cps_t.to(torch.int8)
+        ah_b[b_idx_full, 1, first_empty] = action_vals.to(torch.int8)
+        ah_b[b_idx_full, 2, first_empty] = tsumo_ints
+
         for j, i in enumerate(indices):
             states[i].round_state.action_history = ah_b[j]
         if profile: _t1c = _time.time() - _ta

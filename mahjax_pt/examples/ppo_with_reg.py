@@ -293,15 +293,18 @@ def train_ppo(
             values_list = [float(values_all[i].item()) for i in range(num_envs)]
             t_net += time.time() - _t0
 
-            # ── Env step: use batch for discard-only steps, serial (with auto_reset) otherwise ──
+            # ── Env step: always use batch step, reset terminated envs after ──
             _t0 = time.time()
-            all_discard = all(a < Action.TSUMOGIRI + 1 for a in actions_list)
             do_profile = (t % 16 == 0)  # profile every 16 steps
-            if all_discard and hasattr(env, 'step_batch'):
-                # All discards → batch step (no auto_reset needed, no game-ending actions)
+            if hasattr(env, 'step_batch'):
                 states = env.step_batch(states, actions_list, profile=do_profile)
+                # step_batch doesn't have auto_reset — manually reset terminated envs
+                for i in range(num_envs):
+                    if states[i].terminated:
+                        g = torch.Generator().manual_seed(
+                            seed + update_idx * 100000 + t * num_envs + i)
+                        states[i] = env.init(g)
             else:
-                # Mixed actions or game-ending actions → serial with auto_reset
                 for i in range(num_envs):
                     g = torch.Generator().manual_seed(
                         seed + update_idx * 100000 + t * num_envs + i)
