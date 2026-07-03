@@ -293,17 +293,17 @@ def train_ppo(
             values_list = [float(values_all[i].item()) for i in range(num_envs)]
             t_net += time.time() - _t0
 
-            # ── Env step: always use batch step, reset terminated envs after ──
+            # ── Env step: reset terminated envs BEFORE step (matching auto_reset pattern) ──
             _t0 = time.time()
             do_profile = (t % 16 == 0)  # profile every 16 steps
             if hasattr(env, 'step_batch'):
-                states = env.step_batch(states, actions_list, profile=do_profile)
-                # step_batch doesn't have auto_reset — manually reset terminated envs
+                # Reset terminated envs FIRST (auto_reset pattern: init before step)
                 for i in range(num_envs):
                     if states[i].terminated:
                         g = torch.Generator().manual_seed(
                             seed + update_idx * 100000 + t * num_envs + i)
                         states[i] = env.init(g)
+                states = env.step_batch(states, actions_list, profile=do_profile)
             else:
                 for i in range(num_envs):
                     g = torch.Generator().manual_seed(
