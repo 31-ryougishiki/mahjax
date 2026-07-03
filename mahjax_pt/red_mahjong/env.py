@@ -390,7 +390,8 @@ class RedMahjong(Env):
     def _draw_batch(self, states, indices, profile=False):
         """Batch draw: accept riichi, draw, build masks — with batched kan/tsumo/kyuushu checks."""
         import time as _time
-        _t_start = _time.time() if profile else 0
+        _t = {} if profile else None
+        _t0 = _time.time() if profile else 0
         B = len(indices)
         device = states[0].players.hand.device
 
@@ -433,7 +434,7 @@ class RedMahjong(Env):
             cp_melds_list.append(states[i].players.melds[cp].clone())
             cp_meld_counts_list.append(int(states[i].players.meld_counts[cp].item()))
 
-        if profile: _t['p1'] = 1000 * (_time.time() - _t_start)
+        if profile: _t['p1'] = 1000 * (_time.time() - _t0)
 
         # === Phase 2: Batched expensive checks ===
         cp_hands = torch.stack(cp_hands_list)  # (B, 37)
@@ -441,13 +442,13 @@ class RedMahjong(Env):
         n_kan_t = torch.tensor(n_kan_list, dtype=torch.int32, device=device)
         nxt_ixs_t = torch.tensor(nxt_ixs_list, dtype=torch.int32, device=device)
 
-        if profile: _t['p2a'] = 1000 * (_time.time() - _t_start)
+        if profile: _t['p2a'] = 1000 * (_time.time() - _t0)
 
         # Kan: closed_kan (B, 34) + added_kan (B, 34)
         kan_allowed = ~is_haitei_t & (n_kan_t < 4)  # (B,)
         closed_kan_b = Hand.can_closed_kan_batch(cp_hands)  # (B, 34)
 
-        if profile: _t['p2b'] = 1000 * (_time.time() - _t_start)
+        if profile: _t['p2b'] = 1000 * (_time.time() - _t0)
 
         # Added kan: scan melds to find pon targets, combine with can_added_kan
         added_kan_base_b = Hand.can_added_kan_batch(cp_hands)  # (B, 34)
@@ -461,18 +462,18 @@ class RedMahjong(Env):
         added_kan_b = added_kan_base_b & has_pon_meld  # (B, 34)
         kan_all_b = (closed_kan_b | added_kan_b) & kan_allowed.unsqueeze(1)  # (B, 34)
 
-        if profile: _t['p2c'] = 1000 * (_time.time() - _t_start)
+        if profile: _t['p2c'] = 1000 * (_time.time() - _t0)
 
         # Tsumo
         can_tsumo_b = Hand.can_tsumo_batch(cp_hands)  # (B,)
 
-        if profile: _t['p2d'] = 1000 * (_time.time() - _t_start)
+        if profile: _t['p2d'] = 1000 * (_time.time() - _t0)
 
         # Kyuushu
         can_kyuushu_b = Hand.can_kyuushu_batch(cp_hands)  # (B,)
         is_first_turn_b = (nxt_ixs_t >= FIRST_DRAW_IDX - 4)  # (B,)
 
-        if profile: _t['p2e'] = 1000 * (_time.time() - _t_start)
+        if profile: _t['p2e'] = 1000 * (_time.time() - _t0)
 
         # === Phase 3: Per-env mask construction using precomputed results ===
         _t_shanten = 0.0; _t_riichi = 0.0
@@ -517,7 +518,7 @@ class RedMahjong(Env):
                 states[i].players.furiten_by_pass[cp] = False
 
         if profile:
-            _t['p3'] = 1000 * (_time.time() - _t_start)
+            _t['p3'] = 1000 * (_time.time() - _t0)
             _t['p3s'] = 1000 * _t_shanten
             _t['p3r'] = 1000 * _t_riichi
             import logging; _log = logging.getLogger("ppo")
