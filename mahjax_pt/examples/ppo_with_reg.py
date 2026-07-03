@@ -296,19 +296,18 @@ def train_ppo(
             # ── Env step: use batch for discard actions ──
             _t0 = time.time()
             all_discard = all(a < Action.TSUMOGIRI + 1 for a in actions_list)
+            do_profile = (t % 16 == 0)  # profile every 16 steps
             if all_discard and hasattr(env, 'step_batch'):
-                # All discards → batch step (profile first call)
-                do_profile = (update_idx == 0 and t == 0)
                 states = env.step_batch(states, actions_list, profile=do_profile)
-                for i in range(num_envs):
-                    if states[i].rewards.abs().sum() > 0:
-                        pass  # reward handled below
             else:
-                # Mixed actions → serial
-                for i in range(num_envs):
-                    g = torch.Generator().manual_seed(
-                        seed + update_idx * 100000 + t * num_envs + i)
-                    states[i] = step_fn(states[i], actions_list[i], g)
+                # Mixed actions — use step_batch for discard subset, serial for rest
+                if hasattr(env, 'step_batch'):
+                    states = env.step_batch(states, actions_list, profile=do_profile)
+                else:
+                    for i in range(num_envs):
+                        g = torch.Generator().manual_seed(
+                            seed + update_idx * 100000 + t * num_envs + i)
+                        states[i] = step_fn(states[i], actions_list[i], g)
             t_step += time.time() - _t0
 
             # ── Collect rewards + buffer data ──
@@ -333,16 +332,16 @@ def train_ppo(
             buffer.current_players.append(cps_b)
             buffer.action_masks.append(masks_b)
 
-            # Log every 16 steps: show avg per step
+            # Log every 16 steps: show avg per step with breakdown
             if t > 0 and t % 16 == 0:
                 block_elapsed = time.time() - block_t0
                 n_env_steps = 16 * num_envs
-                logger.info(f"  rollout step {t:3d}/{num_steps}: "
+                logger.info(f"  step {t:3d}/{num_steps}: "
                             f"obs={t_obs*1000:.0f}ms net={t_net*1000:.0f}ms "
                             f"step={t_step*1000:.0f}ms "
                             f"({n_env_steps} env-calls in {block_elapsed:.1f}s, "
-                            f"avg={block_elapsed*1000/n_env_steps:.1f}ms/env-step)")
-                # Reset accumulators
+                            f"avg={block_elapsed*1000/n_env_steps:.1f}ms/env-step "
+                            f"step/step={t_step*1000/16:.0f}ms/step)")
                 block_t0 = time.time()
                 t_obs = t_net = t_step = 0.0
 

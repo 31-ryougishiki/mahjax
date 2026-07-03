@@ -433,15 +433,21 @@ class RedMahjong(Env):
             cp_melds_list.append(states[i].players.melds[cp].clone())
             cp_meld_counts_list.append(int(states[i].players.meld_counts[cp].item()))
 
+        if profile: _t['p1'] = 1000 * (_time.time() - _t_start)
+
         # === Phase 2: Batched expensive checks ===
         cp_hands = torch.stack(cp_hands_list)  # (B, 37)
         is_haitei_t = torch.tensor(is_haitei_list, dtype=torch.bool, device=device)
         n_kan_t = torch.tensor(n_kan_list, dtype=torch.int32, device=device)
         nxt_ixs_t = torch.tensor(nxt_ixs_list, dtype=torch.int32, device=device)
 
+        if profile: _t['p2a'] = 1000 * (_time.time() - _t_start)
+
         # Kan: closed_kan (B, 34) + added_kan (B, 34)
         kan_allowed = ~is_haitei_t & (n_kan_t < 4)  # (B,)
         closed_kan_b = Hand.can_closed_kan_batch(cp_hands)  # (B, 34)
+
+        if profile: _t['p2b'] = 1000 * (_time.time() - _t_start)
 
         # Added kan: scan melds to find pon targets, combine with can_added_kan
         added_kan_base_b = Hand.can_added_kan_batch(cp_hands)  # (B, 34)
@@ -455,14 +461,21 @@ class RedMahjong(Env):
         added_kan_b = added_kan_base_b & has_pon_meld  # (B, 34)
         kan_all_b = (closed_kan_b | added_kan_b) & kan_allowed.unsqueeze(1)  # (B, 34)
 
+        if profile: _t['p2c'] = 1000 * (_time.time() - _t_start)
+
         # Tsumo
         can_tsumo_b = Hand.can_tsumo_batch(cp_hands)  # (B,)
+
+        if profile: _t['p2d'] = 1000 * (_time.time() - _t_start)
 
         # Kyuushu
         can_kyuushu_b = Hand.can_kyuushu_batch(cp_hands)  # (B,)
         is_first_turn_b = (nxt_ixs_t >= FIRST_DRAW_IDX - 4)  # (B,)
 
+        if profile: _t['p2e'] = 1000 * (_time.time() - _t_start)
+
         # === Phase 3: Per-env mask construction using precomputed results ===
+        _t_shanten = 0.0; _t_riichi = 0.0
         for j, i in enumerate(indices):
             cp = states[i].current_player
             hand = cp_hands[j]
@@ -481,9 +494,12 @@ class RedMahjong(Env):
             if can_tsumo_b[j]:
                 mask[Action.TSUMO] = True
 
-            # Riichi
-            if can_riichi_bools[j] and Hand.can_riichi(hand):
-                mask[Action.RIICHI] = True
+            # Riichi (per-env call — uses Shanten.discard internally)
+            if can_riichi_bools[j]:
+                _tr0 = _time.time()
+                if Hand.can_riichi(hand):
+                    mask[Action.RIICHI] = True
+                _t_riichi += _time.time() - _tr0
 
             # Kyuushu (precomputed)
             if is_first_turn_b[j] and can_kyuushu_b[j]:
@@ -493,15 +509,29 @@ class RedMahjong(Env):
             states[i].round_state.draw_next = False
             states[i].round_state.kan_declared = False
             states[i].round_state.target = -1
+            _ts0 = _time.time()
             states[i].round_state.shanten_current_player = Shanten.number(
                 Hand.to_34(states[i].players.hand_with_red[cp]))
+            _t_shanten += _time.time() - _ts0
             if not bool(states[i].players.riichi[cp].item()):
                 states[i].players.furiten_by_pass[cp] = False
 
         if profile:
+            _t['p3'] = 1000 * (_time.time() - _t_start)
+            _t['p3s'] = 1000 * _t_shanten
+            _t['p3r'] = 1000 * _t_riichi
             import logging; _log = logging.getLogger("ppo")
-            _log.info(f"    _draw_batch profile (B={B}): "
-                      f"total={1000*(_time.time()-_t_start):.0f}ms (vectorized kan/tsumo/kyuushu)")
+            _p1 = _t.get('p1', 0); _p2a = _t.get('p2a', 0) - _p1
+            _p2b = _t.get('p2b', 0) - _t.get('p2a', 0)
+            _p2c = _t.get('p2c', 0) - _t.get('p2b', 0)
+            _p2d = _t.get('p2d', 0) - _t.get('p2c', 0)
+            _p2e = _t.get('p2e', 0) - _t.get('p2d', 0)
+            _p3 = _t.get('p3', 0) - _t.get('p2e', 0)
+            _log.info(f"    _draw_batch (B={B}): "
+                      f"p1={_p1:.0f}ms p2a={_p2a:.0f}ms p2b={_p2b:.0f}ms "
+                      f"p2c={_p2c:.0f}ms p2d={_p2d:.0f}ms p2e={_p2e:.0f}ms "
+                      f"p3={_p3:.0f}ms(sh={_t['p3s']:.0f}+ri={_t['p3r']:.0f}) "
+                      f"total={_t['p3']:.0f}ms")
 
         return states
 
@@ -1286,8 +1316,9 @@ class RedMahjong(Env):
         Groups envs by action type: discard-batch (~90% of actions) are processed
         in one tensor op; rare actions (ron/tsumo/riichi/kan) fall back to serial.
         """
+        import time as _time
+        _ts0 = _time.time() if profile else 0
         B = len(states)
-        device = states[0].players.hand.device
 
         # Classify actions
         discard_indices = []
@@ -1304,13 +1335,27 @@ class RedMahjong(Env):
                 serial_indices.append(i)
                 serial_actions.append(a)
 
+        if profile: _t_class = 1000 * (_time.time() - _ts0)
+
         # Process discard batch
         if discard_indices:
             states = self._discard_batch(states, discard_indices, discard_actions, profile=profile)
 
+        if profile: _t_discard = 1000 * (_time.time() - _ts0)
+
         # Process rare actions serially
         for idx, action in zip(serial_indices, serial_actions):
             states[idx] = self.step(states[idx], action)
+
+        if profile:
+            _t_total = 1000 * (_time.time() - _ts0)
+            _t_serial = _t_total - _t_discard
+            import logging; _log = logging.getLogger("ppo")
+            _log.info(f"step_batch (B={B}): classify={_t_class:.0f}ms "
+                      f"discard_batch={_t_discard - _t_class:.0f}ms "
+                      f"(n_discard={len(discard_indices)}) "
+                      f"serial={_t_serial:.0f}ms (n_serial={len(serial_indices)}) "
+                      f"total={_t_total:.0f}ms")
 
         return states
 
@@ -1408,6 +1453,7 @@ class RedMahjong(Env):
         if profile: _t['2_haitei'] = _time.time() - _t0; _t0 = _time.time()
 
         # ── 3. Meld/ron mask (fully vectorized using 4p batch helpers) ──
+        _tm0 = _time.time() if profile else 0
         targets = torch.tensor([int(states[i].round_state.target) for i in indices], dtype=torch.int32)
         target_tts = Tile.to_tile_type_tensor(targets)  # (B,) canonical tile types
         target_not_honor = target_tts < 27  # (B,) — chi only for non-honor targets
@@ -1426,6 +1472,8 @@ class RedMahjong(Env):
         # Compute src for each (env, player): (discarder - player) % 4
         src_all = (cps_t.unsqueeze(1) - torch.arange(P, device=device).unsqueeze(0)) % 4  # (B, 4)
 
+        if profile: _t['3a_stacks'] = 1000 * (_time.time() - _tm0)
+
         # RON: batched per player
         for p in range(P):
             is_discard = (cps_t == p)  # (B,)
@@ -1439,6 +1487,8 @@ class RedMahjong(Env):
             can_ron_p = Hand.can_ron_batch(p_h37, target_tts)  # (B,)
             ron_ok = (has_yaku_p | haitei_p) & can_ron_p & ~is_furiten_p
             mask_4p[~is_discard, p, Action.RON] = ron_ok[~is_discard]
+
+        if profile: _t['3b_ron'] = 1000 * (_time.time() - _tm0)
 
         # MELD (chi/pon/kan): fully vectorized per player
         cannot_meld_all = is_riichi_all | is_haitei_all.unsqueeze(1) | (meld_counts_all >= MAX_MELDS_PER_PLAYER)  # (B, 4)
@@ -1455,6 +1505,8 @@ class RedMahjong(Env):
                 act = int(CHI_ACTIONS[chi_col].item())
                 mask_4p[:, :, act] = chi_matrix[:, :, chi_col]
 
+        if profile: _t['3c_chi'] = 1000 * (_time.time() - _tm0)
+
         # Pon
         pon_ok = meld_ok  # (B, 4)
         if pon_ok.any():
@@ -1462,6 +1514,8 @@ class RedMahjong(Env):
             red_pon = Hand.can_red_pon_batch_4p(hands_37, target_tts)  # (B, 4)
             mask_4p[:, :, Action.PON] = pon_ok & no_red_pon
             mask_4p[:, :, Action.PON_RED] = pon_ok & red_pon
+
+        if profile: _t['3d_pon'] = 1000 * (_time.time() - _tm0)
 
         # Open Kan
         kan_ok = meld_ok & ~cannot_kan_all  # (B, 4)
@@ -1474,11 +1528,13 @@ class RedMahjong(Env):
         mask_4p[any_act] = mask_4p[any_act] | torch.tensor(
             [a == Action.PASS for a in range(NUM_ACT)], dtype=torch.bool, device=device).unsqueeze(0)
 
-        if profile: _t['3_meld_mask'] = _time.time() - _t0; _t0 = _time.time()
+        if profile: _t['3_kan_pass'] = 1000 * (_time.time() - _tm0)
 
         # ── 4. Next player + draw (vectorized) ──
+        _t4loop = 0.0
         need_draw = []
         for bidx, i in enumerate(indices):
+            _tl0 = _time.time() if profile else 0
             cp = cps[bidx]
             mask_4p[bidx, cp] = False
             can_ron_v = mask_4p[bidx, :, Action.RON]
@@ -1510,21 +1566,26 @@ class RedMahjong(Env):
                 states[i].round_state.last_player = cp
                 states[i].round_state.draw_next = False
             states[i].round_state.can_after_kan = False
+            if profile: _t4loop += _time.time() - _tl0
 
         # Batch draw (uses optimized _draw_batch)
         if need_draw:
             states = self._draw_batch(states, need_draw, profile=profile)
 
         if profile:
-            _t['4_next_player'] = _time.time() - _t0
+            _t['4_loop'] = 1000 * _t4loop
+            _t['4_total'] = 1000 * (_time.time() - _t0)
             import logging; _log = logging.getLogger("ppo")
-            _log.info(f"  _discard_batch profile (B={B}):")
-            _log.info(f"    1_hand total={_t['1_hand_update']*1000:.0f}ms "
-                      f"(sub/to34={_t1a*1000:.0f}ms river={_t1b*1000:.0f}ms "
-                      f"ah={_t1c*1000:.0f}ms furiten={_t1d*1000:.0f}ms n_furiten={_n_furiten})")
+            _log.info(f"  _discard_batch (B={B}):")
+            _log.info(f"    1_hand={_t['1_hand_update']*1000:.0f}ms "
+                      f"(sub={_t1a*1000:.0f} river={_t1b*1000:.0f} "
+                      f"ah={_t1c*1000:.0f} furiten={_t1d*1000:.0f}ms n_furiten={_n_furiten})")
             _log.info(f"    2_haitei={_t['2_haitei']*1000:.1f}ms")
-            _log.info(f"    3_meld={_t['3_meld_mask']*1000:.0f}ms")
-            _log.info(f"    4_next={_t['4_next_player']*1000:.0f}ms draws={len(need_draw)}")
+            _log.info(f"    3_meld={_t['3_kan_pass']:.0f}ms "
+                      f"(stacks={_t.get('3a_stacks',0):.0f} ron={_t.get('3b_ron',0):.0f} "
+                      f"chi={_t.get('3c_chi',0):.0f} pon={_t.get('3d_pon',0):.0f})")
+            _log.info(f"    4_next={_t['4_total']:.0f}ms "
+                      f"(loop={_t['4_loop']:.0f}ms draws={len(need_draw)})")
 
         return states
 
