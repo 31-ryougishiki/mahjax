@@ -1386,6 +1386,44 @@ class RedMahjong(Env):
         device = states[0].players.hand.device
         _t0 = _time.time() if profile else 0
 
+        # ── Safety: filter out envs with already-terminated rounds or full rivers ──
+        safe_indices = []
+        safe_actions = []
+        skipped_term = 0
+        skipped_full = 0
+        for j, i in enumerate(indices):
+            cp = states[i].current_player
+            dc = int(states[i].players.discard_counts[cp].item())
+            if dc >= MAX_DISCARDS_PER_PLAYER:
+                skipped_full += 1
+                continue
+            if states[i].round_state.terminated_round and not states[i].terminated:
+                # Round ended — advance it now if in auto mode
+                if self.next_round_style == "auto" and not self.one_round:
+                    states[i] = self._advance_to_next_round_auto(states[i])
+                skipped_term += 1
+                continue
+            if states[i].terminated:
+                # Game over — skip silently (auto_reset handles re-init in serial path)
+                skipped_term += 1
+                continue
+            safe_indices.append(i)
+            safe_actions.append(actions[j])
+
+        if (skipped_term > 0 or skipped_full > 0) and profile:
+            import logging; _log = logging.getLogger("ppo")
+            _log.warning(f"  _discard_batch: skipped term={skipped_term} full={skipped_full} "
+                         f"(of {len(indices)} total)")
+
+        if not safe_indices:
+            return states  # all envs skipped
+
+        indices = safe_indices
+        actions = safe_actions
+        B = len(indices)
+        if B == 0:
+            return states
+
         # ── Collect per-env scalars ──
         cps = [states[i].current_player for i in indices]
         tiles_l = [actions[j] if actions[j] < Tile.NUM_TILE_TYPE_WITH_RED
@@ -1421,12 +1459,12 @@ class RedMahjong(Env):
         _ta = _time.time() if profile else 0
         rivers_b = River.add_discard_batch(
             rivers_b, tiles, cps_t, d_counts, is_tsumo_flags, is_riichi_flags)
-        # Write back river + discard
+        # Write back river + discard (clamp d to prevent out-of-bounds on terminated rounds)
         for j, i in enumerate(indices):
-            cp = cps[j]; d = int(d_counts[j].item())
+            cp = cps[j]; d = min(int(d_counts[j].item()), MAX_DISCARDS_PER_PLAYER - 1)
             states[i].players.river = rivers_b[j]
             states[i].players.discards[cp, d] = tiles_l[j]
-            states[i].players.discard_counts[cp] += 1
+            states[i].players.discard_counts[cp] = min(int(states[i].players.discard_counts[cp].item()) + 1, MAX_DISCARDS_PER_PLAYER)
             states[i].players.riichi_declared[cp] = False
             states[i].players.ippatsu[cp] = False
             states[i].round_state.target = Tile.to_tile_type(tiles_l[j])
