@@ -207,11 +207,13 @@ class River:
     def add_discard_batch(rivers, tiles, players, idxs, is_tsumogiri, is_riichi):
         """Fully vectorized: rivers=(B,4,24), tiles/players/idxs=(B,), is_tsumo/riichi=(B,) bool."""
         B = rivers.shape[0]
+        max_idx = rivers.shape[2] - 1  # 23
         # Build the packed int32 value for all B envs at once
         tile_u16 = tiles.int() & _TILE_MASK
         tile_u16 = torch.where(is_tsumogiri, tile_u16 | _BIT_TSUMOGIRI, tile_u16)
         tile_u16 = torch.where(is_riichi, tile_u16 | _BIT_RIICHI, tile_u16)
-        # Scatter into rivers[b, players[b], idxs[b]]
+        # Scatter into rivers[b, players[b], idxs[b]] (clamp idx to prevent out-of-bounds)
         batch_idx = torch.arange(B, device=rivers.device)
-        rivers[batch_idx, players.long(), idxs.long()] = tile_u16
+        safe_idxs = idxs.long().clamp(0, max_idx)
+        rivers[batch_idx, players.long(), safe_idxs] = tile_u16
         return rivers

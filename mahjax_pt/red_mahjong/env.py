@@ -475,8 +475,17 @@ class RedMahjong(Env):
 
         if profile: _t['p2e'] = 1000 * (_time.time() - _t0)
 
+        # Riichi: batch check for eligible hands
+        can_riichi_b = torch.zeros(B, dtype=torch.bool, device=device)
+        riichi_eligible = torch.tensor(can_riichi_bools, dtype=torch.bool, device=device)
+        if riichi_eligible.any():
+            eligible_hands = cp_hands[riichi_eligible]  # (K, 37)
+            can_riichi_b[riichi_eligible] = Hand.can_riichi_batch(eligible_hands)  # (K,)
+
+        if profile: _t['p2f'] = 1000 * (_time.time() - _t0)
+
         # === Phase 3: Per-env mask construction using precomputed results ===
-        _t_shanten = 0.0; _t_riichi = 0.0
+        _t_shanten = 0.0
         for j, i in enumerate(indices):
             cp = states[i].current_player
             hand = cp_hands[j]
@@ -495,12 +504,9 @@ class RedMahjong(Env):
             if can_tsumo_b[j]:
                 mask[Action.TSUMO] = True
 
-            # Riichi (per-env call — uses Shanten.discard internally)
-            if can_riichi_bools[j]:
-                _tr0 = _time.time()
-                if Hand.can_riichi(hand):
-                    mask[Action.RIICHI] = True
-                _t_riichi += _time.time() - _tr0
+            # Riichi (precomputed via can_riichi_batch)
+            if can_riichi_b[j]:
+                mask[Action.RIICHI] = True
 
             # Kyuushu (precomputed)
             if is_first_turn_b[j] and can_kyuushu_b[j]:
@@ -520,18 +526,18 @@ class RedMahjong(Env):
         if profile:
             _t['p3'] = 1000 * (_time.time() - _t0)
             _t['p3s'] = 1000 * _t_shanten
-            _t['p3r'] = 1000 * _t_riichi
             import logging; _log = logging.getLogger("ppo")
             _p1 = _t.get('p1', 0); _p2a = _t.get('p2a', 0) - _p1
             _p2b = _t.get('p2b', 0) - _t.get('p2a', 0)
             _p2c = _t.get('p2c', 0) - _t.get('p2b', 0)
             _p2d = _t.get('p2d', 0) - _t.get('p2c', 0)
             _p2e = _t.get('p2e', 0) - _t.get('p2d', 0)
-            _p3 = _t.get('p3', 0) - _t.get('p2e', 0)
+            _p2f = _t.get('p2f', 0) - _t.get('p2e', 0)
+            _p3 = _t.get('p3', 0) - _t.get('p2f', 0)
             _log.info(f"    _draw_batch (B={B}): "
                       f"p1={_p1:.0f}ms p2a={_p2a:.0f}ms p2b={_p2b:.0f}ms "
                       f"p2c={_p2c:.0f}ms p2d={_p2d:.0f}ms p2e={_p2e:.0f}ms "
-                      f"p3={_p3:.0f}ms(sh={_t['p3s']:.0f}+ri={_t['p3r']:.0f}) "
+                      f"p2f_ri={_p2f:.0f}ms p3={_p3:.0f}ms(sh={_t['p3s']:.0f}) "
                       f"total={_t['p3']:.0f}ms")
 
         return states

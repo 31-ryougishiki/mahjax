@@ -653,6 +653,37 @@ class Hand:
         return result
 
     @staticmethod
+    def can_riichi_batch(hands_37):
+        """Vectorized: hands_37 (B, 37) → (B,) bool.
+
+        Checks if any discard from the hand leaves it tenpai.
+        Uses batched Shanten.number_batch with early exit.
+        """
+        B = hands_37.shape[0]
+        device = hands_37.device
+        h34 = Hand.to_34_batch(hands_37)  # (B, 34)
+        from .shanten import Shanten
+
+        results = torch.zeros(B, dtype=torch.bool, device=device)
+
+        # For each tile type present in any hand, try discarding one
+        for t in range(34):
+            has_t = h34[:, t] > 0
+            check = has_t & ~results  # only hands not yet confirmed
+            if not check.any():
+                continue
+
+            # Create hands with one of tile t removed
+            alt = h34.clone()
+            alt[check, t] -= 1
+            shanten = Shanten.number_batch(alt)  # (B,) int
+            results = results | (check & (shanten <= 0))
+            if results.all():
+                break
+
+        return results
+
+    @staticmethod
     def is_tenpai_batch(hands_34):
         """Vectorized: hands_34 (B, 34) → (B,) bool — check tenpai by trying each discard."""
         B = hands_34.shape[0]
