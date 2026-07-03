@@ -30,6 +30,16 @@ POWERS_OF_5_FULL = torch.cat([
 
 class Hand:
     CACHE = _load_hand_cache()
+    _CACHE_DEVICE = None  # device-cached copy of CACHE
+    _CACHE_LAST_DEVICE = None  # which device the cached copy is on
+
+    @staticmethod
+    def _get_cache(device):
+        """Return CACHE on the given device, caching for performance."""
+        if Hand._CACHE_DEVICE is None or Hand._CACHE_LAST_DEVICE != device:
+            Hand._CACHE_DEVICE = Hand.CACHE.to(device)
+            Hand._CACHE_LAST_DEVICE = device
+        return Hand._CACHE_DEVICE
 
     @staticmethod
     def _is_red_chi_action(action):
@@ -365,17 +375,16 @@ class Hand:
             return Hand.sub(hand, tile_type, 3)
         return Hand.sub(hand, tile_type, 4)
 
-    # ── Batch operations (tensorized for multi-env parallelism) ──
+    # ── Batch operations (fully vectorized for multi-env parallelism) ──
 
     @staticmethod
     def add_batch(hands, tiles, x=1):
-        """hands: (B, 34) or (B, 37), tiles: (B,) int — batch tile add."""
-        B = hands.shape[0]
+        """Vectorized: hands (..., 37), tiles (B,) int → hands with tiles[b] += x."""
         hands = hands.clone()
-        for b in range(B):
-            t = int(tiles[b].item()) if isinstance(tiles[b], torch.Tensor) else int(tiles[b])
-            if t >= 0 and t < hands.shape[1]:
-                hands[b, t] += x
+        valid = (tiles >= 0) & (tiles < hands.shape[-1])
+        if valid.any():
+            idx = torch.arange(hands.shape[0], device=hands.device)[valid]
+            hands[idx, tiles[valid].long()] += x
         return hands
 
     @staticmethod
@@ -383,59 +392,284 @@ class Hand:
         return Hand.add_batch(hands, tiles, -x)
 
     @staticmethod
-    def can_ron_batch(hands, tiles):
-        """hands: (B, 34) or (B, 37), tiles: (B,) int — batch can_ron check."""
-        B = hands.shape[0]
-        results = torch.zeros(B, dtype=torch.bool)
-        for b in range(B):
-            results[b] = Hand.can_ron(hands[b], int(tiles[b].item()))
-        return results
-
-    @staticmethod
-    def can_pon_batch(hands, tiles):
-        """hands: (B, 37), tiles: (B,) int."""
-        B = hands.shape[0]
-        results = torch.zeros(B, dtype=torch.bool)
-        for b in range(B):
-            results[b] = Hand.can_pon(hands[b], int(tiles[b].item()))
-        return results
-
-    @staticmethod
-    def can_chi_any_batch(hands, tiles):
-        """hands: (B, 37), tiles: (B,) int — can chi at all (for mask, don't care which type)."""
-        B = hands.shape[0]; results = torch.zeros(B, dtype=torch.bool)
-        for b in range(B):
-            h, t = hands[b], int(tiles[b].item())
-            for a in (Action.CHI_L, Action.CHI_M, Action.CHI_R,
-                       Action.CHI_L_RED, Action.CHI_M_RED, Action.CHI_R_RED):
-                if Hand.can_chi(h, t, a):
-                    results[b] = True; break
-        return results
-
-    @staticmethod
-    def can_open_kan_batch(hands, tiles):
-        B = hands.shape[0]; results = torch.zeros(B, dtype=torch.bool)
-        for b in range(B):
-            results[b] = Hand.can_open_kan(hands[b], int(tiles[b].item()))
-        return results
-
-    @staticmethod
     def to_34_batch(hands):
-        """hands: (B, 37) or (B, 34) — batch to_34."""
-        if hands.shape[1] == Tile.NUM_TILE_TYPE:
+        """Vectorized: works on any shape (..., 37) → (..., 34)."""
+        if hands.shape[-1] == Tile.NUM_TILE_TYPE:
             return hands
-        B = hands.shape[0]
-        out = hands[:, :Tile.NUM_TILE_TYPE].clone()
-        out[:, Tile.BLACK_FIVE["m"]] += hands[:, Tile.RED_FIVE["m"]]
-        out[:, Tile.BLACK_FIVE["p"]] += hands[:, Tile.RED_FIVE["p"]]
-        out[:, Tile.BLACK_FIVE["s"]] += hands[:, Tile.RED_FIVE["s"]]
+        out = hands[..., :Tile.NUM_TILE_TYPE].clone()
+        out[..., Tile.BLACK_FIVE["m"]] += hands[..., Tile.RED_FIVE["m"]]
+        out[..., Tile.BLACK_FIVE["p"]] += hands[..., Tile.RED_FIVE["p"]]
+        out[..., Tile.BLACK_FIVE["s"]] += hands[..., Tile.RED_FIVE["s"]]
         return out
 
     @staticmethod
+    def can_tsumo_batch(hands):
+        """Vectorized: hands (B, 37) → (B,) bool — complete hand check using cache."""
+        B = hands.shape[0]
+        device = hands.device
+        h34 = Hand.to_34_batch(hands)  # (B, 34)
+
+        # 1. Thirteen orphans
+        orphan_idx = THIRTEEN_ORPHAN_IDX.to(device)
+        th = h34[:, orphan_idx]  # (B, 13)
+        thirteen = (th > 0).all(dim=1) & (th.sum(dim=1) == 14)  # (B,)
+
+        # 2. Seven pairs
+        seven_p = (h34 == 2).sum(dim=1) == 7  # (B,)
+
+        # 3. Normal hand: base-5 encoding + cache lookup
+        POW9 = torch.tensor([5**8, 5**7, 5**6, 5**5, 5**4, 5**3, 5**2, 5**1, 5**0],
+                            dtype=torch.int32, device=device)
+        suits = h34[:, :27].reshape(B, 3, 9).to(torch.int32)  # (B, 3, 9)
+        suit_codes = (suits * POW9).sum(dim=2)  # (B, 3)
+
+        POW7 = torch.tensor([5**6, 5**5, 5**4, 5**3, 5**2, 5**1, 5**0],
+                            dtype=torch.int32, device=device)
+        honors = h34[:, 27:34].to(torch.int32)  # (B, 7)
+        honor_codes = (honors * POW7).sum(dim=1) + 1953125  # (B,)
+
+        codes = torch.cat([suit_codes, honor_codes.unsqueeze(1)], dim=1)  # (B, 4)
+
+        # Batch cache lookup: (CACHE[code >> 5] >> (code & 31)) & 1
+        CACHE = Hand._get_cache(device)
+        cache_idx = (codes >> 5).long().clamp(0, CACHE.shape[0] - 1)  # (B, 4)
+        bit_idx = codes & 0b11111  # (B, 4)
+        cache_vals = CACHE[cache_idx]  # (B, 4)  fancy-index gather
+        valid_suits = ((cache_vals >> bit_idx) & 1).bool()  # (B, 4)
+
+        # Head count
+        suit_sums = suits.sum(dim=2)  # (B, 3)
+        heads_suits = ((suit_sums % 3) == 2).sum(dim=1)  # (B,)
+        heads_honors = (h34[:, 27:34] == 2).sum(dim=1)  # (B,)
+        heads = heads_suits + heads_honors  # (B,)
+
+        # Honor constraint: no 1 or 4 copies
+        honor_ok = ((h34[:, 27:34] != 1) & (h34[:, 27:34] != 4)).all(dim=1)  # (B,)
+
+        normal = valid_suits.all(dim=1) & (heads == 1) & honor_ok  # (B,)
+        return normal | thirteen | seven_p  # (B,)
+
+    @staticmethod
+    def can_ron_batch(hands, tiles):
+        """Vectorized: hands (B, 37), tiles (B,) → (B,) bool."""
+        hands_with = Hand.add_batch(hands, tiles, 1)
+        return Hand.can_tsumo_batch(hands_with)
+
+    @staticmethod
+    def can_closed_kan_batch(hands):
+        """Vectorized: hands (B, 37) → (B, 34) bool mask for all tile types."""
+        B = hands.shape[0]
+        h34 = Hand.to_34_batch(hands)  # (B, 34)
+        result = h34 == 4  # (B, 34)  basic: need 4 copies
+        # Red-five adjustment: 3 normal + 1 red
+        for tt in (Tile.BLACK_FIVE["m"], Tile.BLACK_FIVE["p"], Tile.BLACK_FIVE["s"]):
+            red = Tile.to_red(tt)
+            result[:, tt] = (hands[:, tt] == 3) & (hands[:, red] == 1)
+        return result  # (B, 34)
+
+    @staticmethod
+    def can_added_kan_batch(hands):
+        """Vectorized: hands (B, 37) → (B, 34) bool — need exactly 1 of the tile type."""
+        h34 = Hand.to_34_batch(hands)  # (B, 34)
+        return h34 == 1  # (B, 34)
+
+    @staticmethod
+    def can_kyuushu_batch(hands):
+        """Vectorized: hands (B, 37) → (B,) bool."""
+        h34 = Hand.to_34_batch(hands)
+        mask = Hand.KYUUSHU_MASK.to(hands.device)
+        return (h34 * mask > 0).sum(dim=1) >= 9  # (B,)
+
+    # ── Multi-player batch helpers (used by meld mask phase) ──
+
+    @staticmethod
+    def can_no_red_pon_batch_4p(hands, target_tts):
+        """hands: (B, 4, 37), target_tts: (B,) → returns (B, 4) bool.
+
+        target_tts[b] is the tile-type of the discarded tile in env b (same for all 4 players).
+        """
+        B, P = hands.shape[0], hands.shape[1]
+        h34 = Hand.to_34_batch(hands)  # (B, 4, 34)
+        idx = target_tts.view(B, 1, 1).expand(B, P, 1)  # (B, 4, 1)
+        counts = h34.gather(2, idx.long()).squeeze(2)  # (B, 4)
+        return counts >= 2
+
+    @staticmethod
+    def can_red_pon_batch_4p(hands, target_tts):
+        """hands: (B, 4, 37), target_tts: (B,) → returns (B, 4) bool."""
+        B, P = hands.shape[0], hands.shape[1]
+        device = hands.device
+        result = torch.zeros(B, P, dtype=torch.bool, device=device)
+        for tt in (4, 13, 22):
+            is_target = (target_tts == tt).unsqueeze(1)  # (B, 1)
+            if is_target.any():
+                red = Tile.to_red(tt)
+                result = result | (is_target & (hands[:, :, tt] > 0) & (hands[:, :, red] > 0))
+        return result
+
+    @staticmethod
+    def can_open_kan_batch_4p(hands, target_tts):
+        """hands: (B, 4, 37), target_tts: (B,) → returns (B, 4) bool.
+
+        Need 3 copies of the target tile type (with red-five handling).
+        """
+        B, P = hands.shape[0], hands.shape[1]
+        device = hands.device
+        h34 = Hand.to_34_batch(hands)  # (B, 4, 34)
+        idx = target_tts.view(B, 1, 1).expand(B, P, 1)  # (B, 4, 1)
+        counts34 = h34.gather(2, idx.long()).squeeze(2)  # (B, 4)
+        result = counts34 == 3  # basic: need exactly 3
+        # Red-five adjustment for five types
+        for tt in (4, 13, 22):
+            is_target = (target_tts == tt).unsqueeze(1)  # (B, 1)
+            if is_target.any():
+                red = Tile.to_red(tt)
+                # 3 copies total: either 3 normal, or 2 normal + 1 red
+                alt_ok = ((hands[:, :, tt] == 2) & (hands[:, :, red] == 1))
+                result = result | (is_target & alt_ok)
+        return result
+
+    @staticmethod
+    def can_chi_matrix_batch_4p(hands, targets, src_mask):
+        """hands: (B, 4, 37), targets: (B,) discard tiles, src_mask: (B, 4) bool.
+
+        Returns (B, 4, 6) bool: chi_L, chi_L_RED, chi_M, chi_M_RED, chi_R, chi_R_RED.
+        Only checks entries where src_mask[b, p] is True (src == 3, player to left).
+        """
+        B, P = hands.shape[0], hands.shape[1]
+        device = hands.device
+        result = torch.zeros(B, P, 6, dtype=torch.bool, device=device)
+
+        target_tts = Tile.to_tile_type_tensor(targets)  # (B,)
+        tt = target_tts  # (B,)  canonical tile type (0-33)
+
+        # Only applicable to non-honor tiles (tt < 27)
+        valid_tt = (tt < 27).unsqueeze(1)  # (B, 1)
+
+        if not valid_tt.any():
+            return result
+
+        # Gather adjacent tile counts from the 37-type hand
+        # For each chi direction, gather the required tiles
+        for chi_idx in range(3):
+            col_base = chi_idx * 2  # 0=CHI_L, 2=CHI_M, 4=CHI_R
+            if chi_idx == 0:  # left: need tt+1, tt+2
+                cond = valid_tt & (tt % 9 < 7).unsqueeze(1)  # (B, 1)
+                t1 = (tt + 1).clamp(0, 36)
+                t2 = (tt + 2).clamp(0, 36)
+            elif chi_idx == 1:  # middle: need tt-1, tt+1
+                cond = valid_tt & (tt % 9 > 0).unsqueeze(1) & (tt % 9 < 8).unsqueeze(1)  # (B, 1)
+                t1 = (tt - 1).clamp(0, 36)
+                t2 = (tt + 1).clamp(0, 36)
+            else:  # right: need tt-2, tt-1
+                cond = valid_tt & (tt % 9 > 1).unsqueeze(1)  # (B, 1)
+                t1 = (tt - 2).clamp(0, 36)
+                t2 = (tt - 1).clamp(0, 36)
+
+            idx1 = t1.view(B, 1, 1).expand(B, P, 1)  # (B, 4, 1)
+            idx2 = t2.view(B, 1, 1).expand(B, P, 1)  # (B, 4, 1)
+
+            has_t1 = hands.gather(2, idx1.long()).squeeze(2) > 0  # (B, 4)
+            has_t2 = hands.gather(2, idx2.long()).squeeze(2) > 0  # (B, 4)
+
+            base_ok = cond & src_mask & has_t1 & has_t2  # (B, 4)
+            result[:, :, col_base] = base_ok  # non-red chi
+
+            # Red chi: additionally need red five in either t1 or t2 position
+            has_red = torch.zeros(B, P, dtype=torch.bool, device=device)
+            for tt_check in (4, 13, 22):
+                red = Tile.to_red(tt_check)
+                # Check if tt_check matches t1 or t2
+                is_t1_target = (t1 == tt_check).unsqueeze(1)  # (B, 1)
+                is_t2_target = (t2 == tt_check).unsqueeze(1)  # (B, 1)
+                has_red = has_red | (is_t1_target & (hands[:, :, red] > 0))
+                has_red = has_red | (is_t2_target & (hands[:, :, red] > 0))
+            result[:, :, col_base + 1] = base_ok & has_red  # red chi
+
+        return result  # (B, 4, 6)
+
+    # ── Legacy single-env batch wrappers (kept for compatibility) ──
+
+    @staticmethod
+    def can_pon_batch(hands, tiles):
+        """Vectorized: hands (B, 37), tiles (B,) → (B,) bool (pon = no_red_pon | red_pon)."""
+        B = hands.shape[0]
+        h34 = Hand.to_34_batch(hands)
+        tt = Tile.to_tile_type_tensor(tiles)
+        idx = tt.view(B, 1)  # (B, 1)
+        no_red = h34.gather(1, idx.long()).squeeze(1) >= 2  # (B,)
+        red = torch.zeros(B, dtype=torch.bool, device=hands.device)
+        for tt5 in (4, 13, 22):
+            is_target = tt == tt5
+            if is_target.any():
+                red5 = Tile.to_red(tt5)
+                red = red | (is_target & (hands[:, tt5] > 0) & (hands[:, red5] > 0))
+        return no_red | red
+
+    @staticmethod
+    def can_chi_any_batch(hands, tiles):
+        """Vectorized: hands (B, 37), tiles (B,) → (B,) bool."""
+        B = hands.shape[0]
+        device = hands.device
+        result = torch.zeros(B, dtype=torch.bool, device=device)
+        tt = Tile.to_tile_type_tensor(tiles)
+        # Only non-honor targets can be chi'd
+        valid = tt < 27
+        if not valid.any():
+            return result
+        # Check all 6 chi actions using per-tile adjacency
+        for chi_idx in range(3):
+            if chi_idx == 0:
+                cond = valid & (tt % 9 < 7)
+                t1, t2 = tt + 1, tt + 2
+            elif chi_idx == 1:
+                cond = valid & (tt % 9 > 0) & (tt % 9 < 8)
+                t1, t2 = tt - 1, tt + 1
+            else:
+                cond = valid & (tt % 9 > 1)
+                t1, t2 = tt - 2, tt - 1
+            if cond.any():
+                idx1 = t1.clamp(0, 36).view(B, 1)
+                idx2 = t2.clamp(0, 36).view(B, 1)
+                has_t1 = hands.gather(1, idx1.long()).squeeze(1) > 0
+                has_t2 = hands.gather(1, idx2.long()).squeeze(1) > 0
+                result = result | (cond & has_t1 & has_t2)
+        return result
+
+    @staticmethod
+    def can_open_kan_batch(hands, tiles):
+        """Vectorized: hands (B, 37), tiles (B,) → (B,) bool."""
+        B = hands.shape[0]
+        h34 = Hand.to_34_batch(hands)
+        tt = Tile.to_tile_type_tensor(tiles)
+        idx = tt.view(B, 1)
+        counts = h34.gather(1, idx.long()).squeeze(1)  # (B,)
+        result = counts == 3
+        for tt5 in (4, 13, 22):
+            is_target = tt == tt5
+            if is_target.any():
+                red5 = Tile.to_red(tt5)
+                result = result | (is_target & (hands[:, tt5] == 2) & (hands[:, red5] == 1))
+        return result
+
+    @staticmethod
     def is_tenpai_batch(hands_34):
-        """hands_34: (B, 34) — batch tenpai check."""
+        """Vectorized: hands_34 (B, 34) → (B,) bool — check tenpai by trying each discard."""
         B = hands_34.shape[0]
-        results = torch.zeros(B, dtype=torch.bool)
-        for b in range(B):
-            results[b] = Hand.is_tenpai(hands_34[b])
+        device = hands_34.device
+        results = torch.zeros(B, dtype=torch.bool, device=device)
+        # can_ron for each tile type: hand_34[t] < 4 and can_ron(hand_34, t)
+        # We compute can_tsumo(add(hand_34, t)) in batch for all 34 tiles
+        for t in range(34):
+            can_add = (hands_34[:, t] < 4)
+            if can_add.any():
+                alt = hands_34.clone()
+                alt[:, t] += 1
+                # For can_ron check we need 37-type hands; convert by adding zeros for red slots
+                alt_37 = torch.zeros(B, 37, dtype=hands_34.dtype, device=device)
+                alt_37[:, :34] = alt
+                can_ron_t = Hand.can_tsumo_batch(alt_37)
+                results = results | (can_add & can_ron_t)
+                if results.all():
+                    break
         return results

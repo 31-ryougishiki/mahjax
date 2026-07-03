@@ -59,6 +59,15 @@ class Tile:
         return t
 
     @staticmethod
+    def to_tile_type_tensor(tiles):
+        """Vectorized: (B,) int tensor → (B,) int tensor (red fives → black five types)."""
+        result = tiles.clone()
+        result[result == Tile.RED_FIVE["m"]] = Tile.BLACK_FIVE["m"]
+        result[result == Tile.RED_FIVE["p"]] = Tile.BLACK_FIVE["p"]
+        result[result == Tile.RED_FIVE["s"]] = Tile.BLACK_FIVE["s"]
+        return result
+
+    @staticmethod
     def to_red(tile_type) -> int:
         """Map canonical tile type → red-five variant if it is a 5.
 
@@ -196,16 +205,13 @@ class River:
 
     @staticmethod
     def add_discard_batch(rivers, tiles, players, idxs, is_tsumogiri, is_riichi):
-        """Batch version: rivers=(B,4,24), tiles=(B,), players=(B,), idxs=(B,)."""
+        """Fully vectorized: rivers=(B,4,24), tiles/players/idxs=(B,), is_tsumo/riichi=(B,) bool."""
         B = rivers.shape[0]
-        for b in range(B):
-            t = int(tiles[b].item()) if isinstance(tiles[b], torch.Tensor) else int(tiles[b])
-            p = int(players[b].item()) if isinstance(players[b], torch.Tensor) else int(players[b])
-            d = int(idxs[b].item()) if isinstance(idxs[b], torch.Tensor) else int(idxs[b])
-            ts = bool(is_tsumogiri[b].item()) if isinstance(is_tsumogiri[b], torch.Tensor) else bool(is_tsumogiri[b])
-            ri = bool(is_riichi[b].item()) if isinstance(is_riichi[b], torch.Tensor) else bool(is_riichi[b])
-            tile_u16 = (t & 0b111111)
-            if ts: tile_u16 |= (1 << 8)
-            if ri: tile_u16 |= (1 << 6)
-            rivers[b, p, d] = tile_u16
+        # Build the packed int32 value for all B envs at once
+        tile_u16 = tiles.int() & _TILE_MASK
+        tile_u16 = torch.where(is_tsumogiri, tile_u16 | _BIT_TSUMOGIRI, tile_u16)
+        tile_u16 = torch.where(is_riichi, tile_u16 | _BIT_RIICHI, tile_u16)
+        # Scatter into rivers[b, players[b], idxs[b]]
+        batch_idx = torch.arange(B, device=rivers.device)
+        rivers[batch_idx, players.long(), idxs.long()] = tile_u16
         return rivers
