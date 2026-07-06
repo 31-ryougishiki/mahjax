@@ -82,19 +82,14 @@ log(f"  dora_indicators={np.array(js.round_state.dora_indicators)}")
 
 # ── RON test: hand + discarded tile ──
 log(f"\n--- RON: hand + discarded tile ({disc_tile}) ---")
-from mahjax_pt.red_mahjong.hand import Hand as PtHand
-from mahjax.red_mahjong.hand import Hand as JaxHand
 from mahjax_pt.red_mahjong.yaku import Yaku as PtYaku
 from mahjax.red_mahjong.yaku import Yaku as JaxYaku
 
-# PT RON — set target like JAX's ron_state
-pt_hand_ron = PtHand.add(torch.from_numpy(ph37.copy()), disc_tile)
-log(f"PT hand for RON ({int(pt_hand_ron.sum().item())} tiles): {short_hand(pt_hand_ron.numpy())}")
-ps.round_state.target = disc_tile  # ← match JAX ron_state
-
-# JAX RON — convert to jnp array first, then add tile
-jax_hand_ron = JaxHand.add(jnp.array(jh37), disc_tile)
-log(f"JAX hand for RON ({int(jnp.sum(jax_hand_ron))} tiles): {short_hand(np.array(jax_hand_ron))}")
+# RON — JAX passes 13-tile hand + state.target = discarded tile (winning tile tracked in state)
+# Do NOT add the discarded tile to the hand; Yaku.judge reads it from state.target
+ps.round_state.target = disc_tile
+log(f"PT hand for RON ({int(torch.from_numpy(ph37).sum().item())} tiles): {short_hand(ph37)}")
+log(f"JAX hand for RON ({int(np.sum(jh37))} tiles): {short_hand(jh37)}")
 
 # JAX state target was reset to -1 after step 0's draw — set to discard like ron_state
 js_ron = js.replace(round_state=js.round_state.replace(target=jnp.int8(disc_tile)))
@@ -105,54 +100,39 @@ log("Calling JAX Yaku.judge for RON...")
 jax_fan_ron, jax_fu_ron = None, None
 try:
     jax_yaku_ron, jax_fan_ron, jax_fu_ron = JaxYaku.judge(
-        jax_hand_ron, jnp.bool_(True), p, js_ron)
+        jnp.array(jh37), jnp.bool_(True), p, js_ron)
     log(f"  JAX: fan={jax_fan_ron} fu={jax_fu_ron}")
     log(f"  JAX yaku indices: {[i for i,v in enumerate(np.array(jax_yaku_ron)) if v]}")
 except Exception as e:
     log(f"  JAX ERROR: {e}")
 
 log("Calling PT Yaku.judge for RON...")
-pt_yaku_ron, pt_fan_ron, pt_fu_ron = PtYaku.judge(pt_hand_ron, True, p, ps)
+pt_yaku_ron, pt_fan_ron, pt_fu_ron = PtYaku.judge(torch.from_numpy(ph37), True, p, ps)
 log(f"  PT:  fan={pt_fan_ron} fu={pt_fu_ron}")
 pt_ron_idx = [i for i,v in enumerate(pt_yaku_ron) if v]
 log(f"  PT  yaku indices: {pt_ron_idx}")
 
-# Quick debug: check has_honor/has_outside directly
-from mahjax_pt.red_mahjong.yaku import Yaku as PtYaku2, YI, OUTSIDE_TILE
-flatten_test = PtYaku2.flatten(pt_hand_ron,
-    torch.full((4,), 65535, dtype=torch.int32), 0)
-honor_test = bool((flatten_test[27:34] > 0).any().item())
-outside_test = bool((flatten_test[OUTSIDE_TILE] > 0).any().item())
-log(f"  [DEBUG] flatten[27:34]={flatten_test[27:34].tolist()} has_honor={honor_test} has_outside={outside_test}")
-
-# ── TSUMO test: hand + next deck tile ──
+# ── TSUMO test: 13-tile hand + state.last_draw = next deck tile ──
 log(f"\n--- TSUMO: hand + next deck tile ({next_tile}) ---")
-pt_hand_tsumo = PtHand.add(torch.from_numpy(ph37.copy()), next_tile)
-jax_hand_tsumo = JaxHand.add(jnp.array(jh37), next_tile)
-log(f"PT hand for TSUMO ({int(pt_hand_tsumo.sum().item())} tiles): {short_hand(pt_hand_tsumo.numpy())}")
-log(f"JAX hand for TSUMO ({int(jnp.sum(jax_hand_tsumo))} tiles): {short_hand(np.array(jax_hand_tsumo))}")
-
-# For TSUMO, set last_draw to next_tile (match JAX tsumo_state)
+log(f"PT hand for TSUMO ({int(torch.from_numpy(ph37).sum().item())} tiles): {short_hand(ph37)}")
+log(f"JAX hand for TSUMO ({int(np.sum(jh37))} tiles): {short_hand(jh37)}")
 ps.round_state.last_draw = next_tile
-log(f"  PT  state last_draw (set to next_tile): {ps.round_state.last_draw}")
 
-# For JAX: the state needs last_draw set to next_tile too
-# (JAX creates tsumo_state with last_draw=next_tile)
 js_tsumo = js.replace(round_state=js.round_state.replace(last_draw=jnp.int8(next_tile)))
-log(f"  JAX state last_draw (set to next_tile): {int(js_tsumo.round_state.last_draw)}")
+log(f"  state last_draw set to next_tile={next_tile}")
 
 log("Calling JAX Yaku.judge for TSUMO...")
 jax_fan_tsumo, jax_fu_tsumo = None, None
 try:
     jax_yaku_tsumo, jax_fan_tsumo, jax_fu_tsumo = JaxYaku.judge(
-        jax_hand_tsumo, jnp.bool_(False), p, js_tsumo)
+        jnp.array(jh37), jnp.bool_(False), p, js_tsumo)
     log(f"  JAX: fan={jax_fan_tsumo} fu={jax_fu_tsumo}")
     log(f"  JAX yaku indices: {[i for i,v in enumerate(np.array(jax_yaku_tsumo)) if v]}")
 except Exception as e:
     log(f"  JAX ERROR: {e}")
 
 log("Calling PT Yaku.judge for TSUMO...")
-pt_yaku_tsumo, pt_fan_tsumo, pt_fu_tsumo = PtYaku.judge(pt_hand_tsumo, False, p, ps)
+pt_yaku_tsumo, pt_fan_tsumo, pt_fu_tsumo = PtYaku.judge(torch.from_numpy(ph37), False, p, ps)
 log(f"  PT:  fan={pt_fan_tsumo} fu={pt_fu_tsumo}")
 pt_tsumo_idx = [i for i,v in enumerate(pt_yaku_tsumo) if v]
 log(f"  PT  yaku indices: {pt_tsumo_idx}")
