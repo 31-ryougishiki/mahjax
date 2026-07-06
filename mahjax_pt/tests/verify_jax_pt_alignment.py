@@ -72,19 +72,25 @@ fields = [
     ("round/honba",     lambda s: (s.round_state.round, s.round_state.honba)),
     ("riichi",          lambda s: s.players.riichi),
     ("riichi_declared", lambda s: s.players.riichi_declared),
+    ("ippatsu",         lambda s: s.players.ippatsu),
+    ("double_riichi",   lambda s: s.players.double_riichi),
     ("has_won",         lambda s: s.players.has_won),
     ("n_kan",           lambda s: s.players.n_kan),
     ("terminated_round",lambda s: s.round_state.terminated_round),
     ("last_draw",       lambda s: s.round_state.last_draw),
     ("last_player",     lambda s: s.round_state.last_player),
     ("target",          lambda s: s.round_state.target),
+    ("is_haitei",       lambda s: s.round_state.is_haitei),
+    ("is_abortive",     lambda s: s.round_state.is_abortive_draw_normal),
+    ("draw_next",       lambda s: s.round_state.draw_next),
 ]
 
 print("\n1. Init + copy...", end=" ", flush=True)
 t0 = time.time()
 jax_env = JaxEnv(round_mode="single")
 pt_env = PtEnv(round_mode="single")
-js = jax_env.init(jax.random.PRNGKey(42))
+SEED = 99  # Use different seed for testing
+js = jax_env.init(jax.random.PRNGKey(SEED))
 ps = pt_env.init(key=0)
 ps = copy_jax_to_pt(js, ps)
 print(f"{time.time()-t0:.1f}s")
