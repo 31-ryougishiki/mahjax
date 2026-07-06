@@ -117,6 +117,14 @@ log(f"  PT:  fan={pt_fan_ron} fu={pt_fu_ron}")
 pt_ron_idx = [i for i,v in enumerate(pt_yaku_ron) if v]
 log(f"  PT  yaku indices: {pt_ron_idx}")
 
+# Quick debug: check has_honor/has_outside directly
+from mahjax_pt.red_mahjong.yaku import Yaku as PtYaku2, YI, OUTSIDE_TILE
+flatten_test = PtYaku2.flatten(pt_hand_ron,
+    torch.full((4,), 65535, dtype=torch.int32), 0)
+honor_test = bool((flatten_test[27:34] > 0).any().item())
+outside_test = bool((flatten_test[OUTSIDE_TILE] > 0).any().item())
+log(f"  [DEBUG] flatten[27:34]={flatten_test[27:34].tolist()} has_honor={honor_test} has_outside={outside_test}")
+
 # ── TSUMO test: hand + next deck tile ──
 log(f"\n--- TSUMO: hand + next deck tile ({next_tile}) ---")
 pt_hand_tsumo = PtHand.add(torch.from_numpy(ph37.copy()), next_tile)
