@@ -345,8 +345,8 @@ class Yaku:
         in_range = suit == (lt // 9)
         pos = lt % 9
 
-        # Pinfu update
-        is_pinfu = is_pinfu & (~in_range | (((open_end >> pos) & 1) == 1) & (pung == 0))
+        # Pinfu update — parentheses must match JAX: (~in_range | open_end_check) & (pung == 0)
+        is_pinfu = is_pinfu & ((~in_range | (((open_end >> pos) & 1) == 1)) & (pung == 0))
 
         # Outside
         has_outside = has_outside & (outside_flag == 1)
@@ -526,7 +526,8 @@ class Yaku:
         # ── fu cleanup ──
         fu = fu * (is_pinfu == 0).to(torch.int32)
         fu = fu + 20 + 10 * int(is_hand_concealed and is_ron)
-        fu = fu + 10 * int(not is_hand_concealed and bool((fu == 20).any().item()))
+        # Kuipin correction: open hand with fu==20 → min 30 fu (per pattern, match JAX)
+        fu = fu + 10 * ((not is_hand_concealed) & (fu == 20))
 
         # ── global shape features ──
         flatten = Yaku.flatten(hand, melds, n_meld)  # (34,)
@@ -698,7 +699,10 @@ class Yaku:
         n_concealed_pung = int((hand >= 3).sum().item()) - (is_ron and hand[last_tile_type] >= 3) + n_closed_kan
 
         codes = (hand[:27].to(torch.int32) * POWERS_OF_5).reshape(3, 9).sum(dim=1)  # (3,)
-        nine_gates = any(int(Yaku.CACHE[int(codes[s].item()), 0].item()) >> 26 for s in range(3))
+        # Check all 3 decomposition patterns per suit (match JAX vmap over all columns)
+        nine_gates = any(
+            any(int(v.item()) >> 26 for v in Yaku.CACHE[int(codes[s].item())])
+            for s in range(3))
 
         flatten = Yaku.flatten(hand, melds, 0)
         four_winds = int((flatten[27:31] >= 3).sum().item())
