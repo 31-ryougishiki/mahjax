@@ -1207,11 +1207,11 @@ class RedMahjongSerial(Env):
             hand_p = state.players.hand_with_red[p]
 
             # RON on the discarded tile — col 0
-            # JAX: ron_state = _replace_state(state, target=jnp.int8(tile))
+            # JAX: passes 13-tile hand + state.target = discarded tile
+            # Yaku.judge reads last_tile from state.target internally
             state.round_state.target = disc_tile
             try:
-                hand_for_ron = Hand.add(hand_p, disc_tile)
-                _, fan_ron, fu_ron = Yaku.judge(hand_for_ron, True, p, state)
+                _, fan_ron, fu_ron = Yaku.judge(hand_p, True, p, state)
                 fan_r = int(fan_ron.item()) if isinstance(fan_ron, torch.Tensor) else int(fan_ron)
                 fu_r = int(fu_ron.item()) if isinstance(fu_ron, torch.Tensor) else int(fu_ron)
                 state.players.has_yaku[p, 0] = (fan_r > 0)
@@ -1221,12 +1221,11 @@ class RedMahjongSerial(Env):
                 pass
 
             # TSUMO on the next draw tile — col 1
-            # JAX: tsumo_state = _replace_state(state, last_draw=jnp.int8(next_tile))
+            # JAX: passes 13-tile hand + state.last_draw = next deck tile
             state.round_state.target = orig_target  # restore; TSUMO doesn't use target
             state.round_state.last_draw = next_tile
             try:
-                hand_for_tsumo = Hand.add(hand_p, next_tile)
-                _, fan_tsumo, fu_tsumo = Yaku.judge(hand_for_tsumo, False, p, state)
+                _, fan_tsumo, fu_tsumo = Yaku.judge(hand_p, False, p, state)
                 fan_t = int(fan_tsumo.item()) if isinstance(fan_tsumo, torch.Tensor) else int(fan_tsumo)
                 fu_t = int(fu_tsumo.item()) if isinstance(fu_tsumo, torch.Tensor) else int(fu_tsumo)
                 state.players.has_yaku[p, 1] = (fan_t > 0)
