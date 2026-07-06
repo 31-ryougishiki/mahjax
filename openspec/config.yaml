@@ -1,0 +1,9 @@
+schema: spec-driven
+
+# Project context
+context: |
+  Tech stack: Python 3.9+, PyTorch 2.x, JAX 0.4.28+
+  Project: GPU-accelerated vectorized mahjong simulators for RL
+  Repo: mahjax (JAX reference), mahjax_pt (PyTorch eager-mode port)
+  Launch: bash script/ppo.sh (Ascend NPU, 128 envs)
+  Domain: Japanese Riichi Mahjong (red fives variant)
