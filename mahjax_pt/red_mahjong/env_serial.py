@@ -1072,15 +1072,17 @@ class RedMahjongSerial(Env):
             else:
                 noten_players.append(p)
 
-        points_per_tenpai = 3000 // len(tenpai_players) if tenpai_players else 0
-        for p in tenpai_players:
-            total = points_per_tenpai * len(noten_players) // 100
-            state.round_state.score[p] += total
-            state.rewards[p] += total
-        for p in noten_players:
-            total = points_per_tenpai // 100
-            state.round_state.score[p] -= total
-            state.rewards[p] -= total
+        # JAX formula: total=30 (3000/100), tenpai gets 30//n_tenpai, noten pays 30//n_noten
+        n_tenpai = len(tenpai_players)
+        n_noten = len(noten_players)
+        if n_tenpai > 0 and n_tenpai < 4:
+            total_reward = 30
+            for p in tenpai_players:
+                state.round_state.score[p] += total_reward // n_tenpai
+                state.rewards[p] += float(total_reward // n_tenpai)
+            for p in noten_players:
+                state.round_state.score[p] -= total_reward // n_noten
+                state.rewards[p] -= float(total_reward // n_noten)
 
         return state
 
