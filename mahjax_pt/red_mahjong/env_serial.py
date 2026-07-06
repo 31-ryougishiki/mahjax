@@ -610,8 +610,8 @@ class RedMahjongSerial(Env):
 
         # Precompute yaku for all 4 players (matches JAX
         # yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile).
-        # Sets has_yaku[*, 0]=tsumo on next draw, has_yaku[*, 1]=ron on this discard.
-        self._precompute_yaku(state)
+        # col 0 = RON on discarded tile, col 1 = TSUMO on next deck tile.
+        self._precompute_yaku(state, tile)
 
         state = self._make_legal_action_mask_after_discard(state)
         return state
@@ -1180,12 +1180,16 @@ class RedMahjongSerial(Env):
     # ── Yaku precompute ──
     # JAX: yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile (L225-252)
 
-    def _precompute_yaku(self, state):
+    def _precompute_yaku(self, state, discarded_tile):
         """Precompute has_yaku/fan/fu for all 4 players after a discard.
 
-        Matches JAX's yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile:
-        - has_yaku[p, 1] = RON on the discarded tile
-        - has_yaku[p, 0] = TSUMO on the next deck tile
+        Matches JAX's yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile.
+        Column layout (same as JAX):
+          col 0 = RON  on the discarded tile (used by _make_legal_action_mask_after_discard)
+          col 1 = TSUMO on the next deck tile (copied to col 0 by _draw for tsumo check)
+
+        For RON: adds discarded_tile to each player's hand (14 tiles for complete win check).
+        For TSUMO: adds next deck tile to each player's hand (14 tiles for complete win check).
         """
         nxt = int(state.round_state.next_deck_ix)
         lst = int(state.round_state.last_deck_ix)
@@ -1193,29 +1197,34 @@ class RedMahjongSerial(Env):
             return  # No more tiles to draw
 
         next_tile = int(state.round_state.deck[nxt])
+        disc_tile = int(discarded_tile) if isinstance(discarded_tile, (torch.Tensor, np.generic)) else discarded_tile
+
         for p in range(4):
             hand_p = state.players.hand_with_red[p]
 
-            # RON on the discarded tile (is_ron=True)
+            # RON on the discarded tile (is_ron=True) — col 0
+            # Must add the discarded tile to form a complete 14-tile winning hand
             try:
-                _, fan_ron, fu_ron = Yaku.judge(hand_p, True, p, state)
+                hand_for_ron = Hand.add(hand_p, disc_tile)
+                _, fan_ron, fu_ron = Yaku.judge(hand_for_ron, True, p, state)
                 fan_r = int(fan_ron.item()) if isinstance(fan_ron, torch.Tensor) else int(fan_ron)
                 fu_r = int(fu_ron.item()) if isinstance(fu_ron, torch.Tensor) else int(fu_ron)
-                state.players.has_yaku[p, 1] = (fan_r > 0)
-                state.players.fan[p, 1] = fan_r
-                state.players.fu[p, 1] = fu_r
+                state.players.has_yaku[p, 0] = (fan_r > 0)
+                state.players.fan[p, 0] = fan_r
+                state.players.fu[p, 0] = fu_r
             except (IndexError, Exception):
                 pass  # Invalid hand pattern — keep default (no yaku)
 
-            # TSUMO on the next draw tile (is_ron=False)
+            # TSUMO on the next draw tile (is_ron=False) — col 1
+            # Add the next deck tile to form a complete 14-tile winning hand
             try:
-                hand_with_next = Hand.add(hand_p, next_tile)
-                _, fan_tsumo, fu_tsumo = Yaku.judge(hand_with_next, False, p, state)
+                hand_for_tsumo = Hand.add(hand_p, next_tile)
+                _, fan_tsumo, fu_tsumo = Yaku.judge(hand_for_tsumo, False, p, state)
                 fan_t = int(fan_tsumo.item()) if isinstance(fan_tsumo, torch.Tensor) else int(fan_tsumo)
                 fu_t = int(fu_tsumo.item()) if isinstance(fu_tsumo, torch.Tensor) else int(fu_tsumo)
-                state.players.has_yaku[p, 0] = (fan_t > 0)
-                state.players.fan[p, 0] = fan_t
-                state.players.fu[p, 0] = fu_t
+                state.players.has_yaku[p, 1] = (fan_t > 0)
+                state.players.fan[p, 1] = fan_t
+                state.players.fu[p, 1] = fu_t
             except (IndexError, Exception):
                 pass  # Invalid hand pattern (e.g. 5+ copies of same tile) — keep defaults
 
