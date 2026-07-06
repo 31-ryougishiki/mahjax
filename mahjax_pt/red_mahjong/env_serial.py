@@ -601,7 +601,8 @@ class RedMahjongSerial(Env):
                 state.players.furiten_by_discard[cp] = True
                 state.players.furiten_by_pass[cp] = False
 
-        # Clear per-discard flags (JAX _discard L990, L1020)
+        # Clear per-discard flags (JAX _discard L965-966, L990, L1020)
+        state.round_state.last_draw = -1
         state.players.ippatsu[cp] = False
         state.round_state.can_after_kan = False
 
