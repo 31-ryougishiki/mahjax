@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Find FIRST field that diverges between JAX and PT, with full context."""
+"""Find FIRST field divergence + dump detailed context for offline debugging."""
 import jax; jax.config.update('jax_disable_jit', True)
 import numpy as np, torch
 from mahjax.red_mahjong.cpu_env import RedMahjong as JaxEnv
@@ -39,110 +39,136 @@ def copy_to_pt(js, ps):
     ah=np.array(jr.action_history); pr.action_history=torch.from_numpy(ah.copy()).to(torch.int8)
     return ps
 
-def compare_all(js, ps, label):
-    """Return list of (field_name, jax_val, pt_val) that differ."""
-    diffs = []
-
-    def chk(name, jv, pv):
-        if isinstance(pv, torch.Tensor): pv = pv.detach().cpu().numpy()
-        jv, pv = np.asarray(jv), np.asarray(pv)
-        if not np.array_equal(jv, pv):
-            diffs.append((name, jv, pv))
-
-    chk("current_player", int(js.current_player), ps.current_player)
-    chk("terminated", bool(js.terminated), ps.terminated)
-
-    jp, pp = js.players, ps.players
-    chk("hand", np.array(jp.hand), pp.hand)
-    chk("hand_with_red", np.array(jp.hand_with_red), pp.hand_with_red)
-    chk("discard_counts", np.array(jp.discard_counts), pp.discard_counts)
-    chk("meld_counts", np.array(jp.meld_counts), pp.meld_counts)
-    chk("melds", np.array(jp.melds), pp.melds)
-    chk("river", np.array(jp.river), pp.river)
-    chk("riichi", np.array(jp.riichi), pp.riichi)
-    chk("riichi_declared", np.array(jp.riichi_declared), pp.riichi_declared)
-    chk("ippatsu", np.array(jp.ippatsu), pp.ippatsu)
-    chk("furiten_by_discard", np.array(jp.furiten_by_discard), pp.furiten_by_discard)
-    chk("furiten_by_pass", np.array(jp.furiten_by_pass), pp.furiten_by_pass)
-    chk("is_hand_concealed", np.array(jp.is_hand_concealed), pp.is_hand_concealed)
-    chk("has_won", np.array(jp.has_won), pp.has_won)
-    chk("n_kan", np.array(jp.n_kan), pp.n_kan)
-    chk("has_yaku", np.array(jp.has_yaku), pp.has_yaku)
-    chk("fan", np.array(jp.fan), pp.fan)
-    chk("fu", np.array(jp.fu), pp.fu)
-
-    jr, pr = js.round_state, ps.round_state
-    chk("round", int(jr.round), pr.round)
-    chk("honba", int(jr.honba), pr.honba)
-    chk("dealer", int(jr.dealer), pr.dealer)
-    chk("next_deck_ix", int(jr.next_deck_ix), pr.next_deck_ix)
-    chk("last_deck_ix", int(jr.last_deck_ix), pr.last_deck_ix)
-    chk("last_draw", int(jr.last_draw), pr.last_draw)
-    chk("last_player", int(jr.last_player), pr.last_player)
-    chk("target", int(jr.target), pr.target)
-    chk("draw_next", bool(jr.draw_next), pr.draw_next)
-    chk("is_haitei", bool(jr.is_haitei), pr.is_haitei)
-    chk("kan_declared", bool(jr.kan_declared), pr.kan_declared)
-    chk("can_after_kan", bool(jr.can_after_kan), pr.can_after_kan)
-    chk("is_abortive_draw_normal", bool(jr.is_abortive_draw_normal), pr.is_abortive_draw_normal)
-    chk("terminated_round", bool(jr.terminated_round), pr.terminated_round)
-    chk("score", np.array(jr.score), pr.score)
-    chk("deck", np.array(jr.deck), pr.deck)
-    chk("dora_indicators", np.array(jr.dora_indicators), pr.dora_indicators)
-    chk("seat_wind", np.array(jr.seat_wind), pr.seat_wind)
-
-    chk("legal_action_mask", np.array(js.legal_action_mask), ps.legal_action_mask)
-    chk("rewards", np.array(js.rewards), ps.rewards)
-
-    return diffs
+def short_hand(h37):
+    """Convert 37-type hand to readable string like '1m2m3m...'"""
+    suits = ['m','p','s','z']
+    parts = []
+    for t in range(34):
+        c = int(h37[t])
+        if c > 0:
+            n = (t % 9) + 1
+            s = suits[t // 9]
+            parts.append(f"{n}{s}" * c)
+    # Red fives
+    for t in [34, 35, 36]:
+        c = int(h37[t])
+        if c > 0:
+            parts.append(f"0{suits[t-34]}" * c)
+    return ''.join(parts)
 
 # ═════════════════════════════════════════════════════════
-print("=" * 70)
-print("Finding FIRST divergence before step 50")
-print("=" * 70)
-
 jenv = JaxEnv(round_mode="single")
 penv = PtEnv(round_mode="single")
 js = jenv.init(jax.random.PRNGKey(42))
 ps = penv.init(key=0)
 ps = copy_to_pt(js, ps)
 
-prev_diff_names = set()
+# Step 0
+legal = np.where(np.array(js.legal_action_mask))[0]
+a = int([x for x in legal if x < 37][0])
+js = jenv.step(js, a)
+ps = penv.step(ps, a)
 
-for step in range(51):
-    if bool(js.terminated) or bool(js.round_state.terminated_round):
-        print(f"Game ended at step {step}")
-        break
+# ── After step 0, BEFORE step 1 — DUMP CONTEXT ──
+print("=" * 70)
+print("CONTEXT DUMP: Before step 1 (after init + first discard)")
+print("=" * 70)
 
-    # Compare BEFORE step
-    diffs = compare_all(js, ps, f"before step {step}")
-    diff_names = set(d[0] for d in diffs)
+js_players = js.players
+ps_players = ps.players
+js_round = js.round_state
+ps_round = ps.round_state
 
-    new_diffs = diff_names - prev_diff_names
-    if new_diffs:
-        print(f"\n>>> BEFORE step {step}: NEW DIFF: {new_diffs}")
-        for name, jv, pv in diffs:
-            if name in new_diffs:
-                n = int(np.sum(jv != pv))
-                if jv.size < 30:
-                    print(f"    {name}: JAX={jv} PT={pv}")
-                else:
-                    print(f"    {name}: {n} elems differ, JAX range [{jv.min()},{jv.max()}] PT range [{pv.min()},{pv.max()}]")
-    elif step % 10 == 0:
-        print(f"  step {step}: all {len(diff_names)} diffs same as before" if diff_names else f"  step {step}: CLEAN")
+print(f"\n--- Round state ---")
+print(f"round={int(js_round.round)} dealer={int(js_round.dealer)}")
+print(f"next_deck_ix={int(js_round.next_deck_ix)} last_deck_ix={int(js_round.last_deck_ix)}")
+print(f"last_draw={int(js_round.last_draw)} last_player={int(js_round.last_player)}")
+print(f"target={int(js_round.target)} draw_next={bool(js_round.draw_next)}")
+print(f"is_haitei={bool(js_round.is_haitei)}")
+print(f"dora_indicators={np.array(js_round.dora_indicators)}")
+print(f"seat_wind={np.array(js_round.seat_wind)}")
+print(f"score={np.array(js_round.score)}")
+print(f"kyotaku={int(js_round.kyotaku)} honba={int(js_round.honba)}")
 
-    prev_diff_names = diff_names
+print(f"\n--- Per-player hands (37-type) ---")
+for p in range(4):
+    jh = np.array(js_players.hand_with_red[p])
+    ph = ps_players.hand_with_red[p].numpy()
+    jsh = short_hand(jh)
+    psh = short_hand(ph)
+    match = "MATCH" if np.array_equal(jh, ph) else "DIFF!"
+    print(f"  Player {p}: JAX={jsh}")
+    if not np.array_equal(jh, ph):
+        print(f"          PT ={psh}  *** {match}")
+        print(f"          JAX raw={[int(x) for x in jh]}")
+        print(f"          PT  raw={ph.tolist()}")
 
-    # Select & execute action
-    legal = np.where(np.array(js.legal_action_mask))[0]
-    discards = [a for a in legal if a < 37]
-    action = int(discards[step % len(discards)] if discards else legal[0])
-    js = jenv.step(js, action)
-    ps = penv.step(ps, action)
+print(f"\n--- Per-player melds ---")
+for p in range(4):
+    jm = np.array(js_players.melds[p])
+    pm = ps_players.melds[p].numpy()
+    jmc = int(js_players.meld_counts[p])
+    pmc = int(ps_players.meld_counts[p])
+    print(f"  Player {p}: count J={jmc} P={pmc}  melds J={[int(x) for x in jm[:jmc]]} P={pm.tolist()[:pmc]}")
 
-# Final report
-diffs_after = compare_all(js, ps, "after final step")
-if diffs_after:
-    print(f"\nFinal diffs: {set(d[0] for d in diffs_after)}")
-else:
-    print(f"\nFULLY ALIGNED after {step+1} steps")
+print(f"\n--- Per-player Yaku precompute (after step 0 discard) ---")
+print(f"  field: JAX value  |  PT value")
+print(f"  has_yaku: {np.array(js_players.has_yaku).tolist()}  |  {ps_players.has_yaku.numpy().tolist()}")
+print(f"  fan:      {np.array(js_players.fan).tolist()}  |  {ps_players.fan.numpy().tolist()}")
+print(f"  fu:       {np.array(js_players.fu).tolist()}  |  {ps_players.fu.numpy().tolist()}")
+
+# Find the player where fan differs
+jfan = np.array(js_players.fan)
+pfan = ps_players.fan.numpy()
+diff_players = np.where((jfan != pfan).any(axis=1))[0]
+print(f"\n--- Fan diff players: {diff_players.tolist()} ---")
+
+# For each diff player, dump the exact input to Yaku.judge
+from mahjax_pt.red_mahjong.yaku import Yaku as PtYaku
+from mahjax.red_mahjong.yaku import Yaku as JaxYaku
+
+for p in diff_players:
+    jh37 = np.array(js_players.hand_with_red[p])
+    ph37 = ps_players.hand_with_red[p].numpy()
+
+    print(f"\n=== Player {p} Yaku.judge detail ===")
+    print(f"  Hand 37: {[int(x) for x in jh37]}")
+    print(f"  Hand readable: {short_hand(jh37)}")
+
+    # Call PT Yaku.judge and dump internals
+    print(f"\n  --- PT Yaku.judge(hand, is_ron=True, player={p}) ---")
+    try:
+        import io, sys
+        pt_yaku, pt_fan, pt_fu = PtYaku.judge(torch.from_numpy(ph37.copy()), True, p, ps)
+        print(f"  yaku={pt_yaku} fan={pt_fan} fu={pt_fu}")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+
+    print(f"\n  --- PT Yaku.judge(hand, is_ron=False, player={p}) ---")
+    try:
+        pt_yaku2, pt_fan2, pt_fu2 = PtYaku.judge(torch.from_numpy(ph37.copy()), False, p, ps)
+        print(f"  yaku={pt_yaku2} fan={pt_fan2} fu={pt_fu2}")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+
+    # Also show JAX values
+    print(f"\n  --- JAX precomputed ---")
+    print(f"  has_yaku = {np.array(js_players.has_yaku[p]).tolist()}")
+    print(f"  fan      = {np.array(js_players.fan[p]).tolist()}")
+    print(f"  fu       = {np.array(js_players.fu[p]).tolist()}")
+
+# Also dump the discarded tile info
+print(f"\n--- Step 0 action info ---")
+print(f"  action taken: {a}")
+print(f"  discarded_tile (target) before step 0: {int(js_round.target)}")
+print(f"  discarded_tile type: the tile that was just discarded in step 0")
+print(f"  next deck tile (for tsumo precompute): deck[{int(js_round.next_deck_ix)}] = {int(js_round.deck[int(js_round.next_deck_ix)])}")
+
+# Show first few deck tiles for context
+deck = np.array(js_round.deck)
+print(f"  Deck[80:84] (recently drawn): {deck[80:84].tolist()}")
+print(f"  Deck[next_deck_ix-3:next_deck_ix+3]: {deck[int(js_round.next_deck_ix)-3:int(js_round.next_deck_ix)+3].tolist()}")
+
+print(f"\n{'=' * 70}")
+print("END CONTEXT DUMP — send this entire output for debugging")
+print(f"{'=' * 70}")
