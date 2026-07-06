@@ -1062,6 +1062,7 @@ class RedMahjongSerial(Env):
     def _abortive_draw_normal(self, state):
         """Handle exhaustive draw (ryukyoku)."""
         state.round_state.terminated_round = True
+        state.round_state.draw_next = False  # JAX L1935
         tenpai_players = []
         noten_players = []
         for p in range(4):
