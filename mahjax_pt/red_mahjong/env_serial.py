@@ -350,7 +350,7 @@ class RedMahjongSerial(Env):
             if profile: _t['selfkan'] = _time.time() - _t0
         elif action == Action.TSUMOGIRI:
             if profile: _t0 = _time.time()
-            state = self._discard(state, state.round_state.last_draw)
+            state = self._discard(state, state.round_state.last_draw, is_tsumogiri_override=True)
             if profile: _t['discard'] = _t.get('discard', 0) + _time.time() - _t0
         elif action == Action.RIICHI:
             if profile: _t0 = _time.time()
@@ -562,8 +562,13 @@ class RedMahjongSerial(Env):
     # ── _discard ──
     # JAX: _discard lines 988-1051
 
-    def _discard(self, state, tile):
-        """Handle a discard action."""
+    def _discard(self, state, tile, is_tsumogiri_override=None):
+        """Handle a discard action.
+
+        Args:
+            is_tsumogiri_override: if not None, override is_tsumogiri flag.
+                JAX uses (action == TSUMOGIRI), PT passes it explicitly.
+        """
         cp = state.current_player
         hand = state.players.hand_with_red[cp]
         tile = int(tile) if isinstance(tile, (torch.Tensor, np.generic)) else tile
@@ -582,8 +587,10 @@ class RedMahjongSerial(Env):
 
         # Add to river
         d_count = int(state.players.discard_counts[cp].item())
-        # JAX: is_tsumogiri = (tile == Action.TSUMOGIRI). PT uses explicit param.
-        is_tsumogiri = (tile == state.round_state.last_draw)
+        if is_tsumogiri_override is not None:
+            is_tsumogiri = is_tsumogiri_override
+        else:
+            is_tsumogiri = False  # regular discard (JAX: action == TSUMOGIRI)
         is_riichi = bool(state.players.riichi_declared[cp])
         state.players.river = River.add_discard(
             state.players.river, torch.tensor(tile), torch.tensor(cp),
@@ -888,6 +895,7 @@ class RedMahjongSerial(Env):
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.is_hand_concealed[cp] = False
 
+        state.round_state.target = -1     # JAX _pon L1526
         state.round_state.draw_next = False
         state.legal_action_mask = self._make_legal_action_mask_after_draw(state)
         state.current_player = cp
@@ -913,6 +921,7 @@ class RedMahjongSerial(Env):
         state.players.is_hand_concealed[cp] = False
         state.players.n_kan[cp] += 1
 
+        state.round_state.target = -1  # JAX _open_kan L1490
         state = self._flip_dora(state)
         state = self._draw_after_kan(state)
         return state
@@ -942,6 +951,7 @@ class RedMahjongSerial(Env):
 
         # Self kan: the kan caller IS the last player (JAX _kan sets last_player=c_p)
         state.round_state.last_player = cp
+        state.round_state.target = -1  # JAX _draw_after_kan non-robbing branch L1404
 
         state = self._flip_dora(state)
         state = self._draw_after_kan(state)
@@ -965,6 +975,7 @@ class RedMahjongSerial(Env):
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.is_hand_concealed[cp] = False
 
+        state.round_state.target = -1  # JAX _chi L1565
         state.round_state.draw_next = False
         state.legal_action_mask = self._make_legal_action_mask_after_draw(state)
         state.current_player = cp
