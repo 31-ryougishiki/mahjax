@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Directly compare JAX Yaku.judge vs PT Yaku.judge on identical inputs."""
 import jax; jax.config.update('jax_disable_jit', True)
+import jax.numpy as jnp
 import numpy as np, torch
 from mahjax.red_mahjong.cpu_env import RedMahjong as JaxEnv
 from mahjax_pt.red_mahjong.env_serial import RedMahjongSerial as PtEnv
@@ -90,17 +91,15 @@ from mahjax.red_mahjong.yaku import Yaku as JaxYaku
 pt_hand_ron = PtHand.add(torch.from_numpy(ph37.copy()), disc_tile)
 log(f"PT hand for RON ({int(pt_hand_ron.sum().item())} tiles): {short_hand(pt_hand_ron.numpy())}")
 
-# JAX RON — we need to call JAX's yaku.judge with the same hand
-# JAX Yaku.judge takes jnp arrays
-jax_hand_ron = JaxHand.add(jh37, disc_tile)
-log(f"JAX hand for RON ({int(sum(jax_hand_ron))} tiles): {short_hand(np.array(jax_hand_ron))}")
+# JAX RON — convert to jnp array first, then add tile
+jax_hand_ron = JaxHand.add(jnp.array(jh37), disc_tile)
+log(f"JAX hand for RON ({int(jnp.sum(jax_hand_ron))} tiles): {short_hand(np.array(jax_hand_ron))}")
 
-# Since JAX yaku.judge may need jit compilation, let's try calling it
 log("Calling JAX Yaku.judge for RON...")
+jax_fan_ron, jax_fu_ron = None, None
 try:
-    import jax.numpy as jnp
     jax_yaku_ron, jax_fan_ron, jax_fu_ron = JaxYaku.judge(
-        jnp.array(jax_hand_ron), jnp.bool_(True), p, js)
+        jax_hand_ron, jnp.bool_(True), p, js)
     log(f"  JAX: fan={jax_fan_ron} fu={jax_fu_ron}")
 except Exception as e:
     log(f"  JAX ERROR: {e}")
@@ -112,14 +111,15 @@ log(f"  PT:  fan={pt_fan_ron} fu={pt_fu_ron}")
 # ── TSUMO test: hand + next deck tile ──
 log(f"\n--- TSUMO: hand + next deck tile ({next_tile}) ---")
 pt_hand_tsumo = PtHand.add(torch.from_numpy(ph37.copy()), next_tile)
-jax_hand_tsumo = JaxHand.add(jh37, next_tile)
+jax_hand_tsumo = JaxHand.add(jnp.array(jh37), next_tile)
 log(f"PT hand for TSUMO ({int(pt_hand_tsumo.sum().item())} tiles): {short_hand(pt_hand_tsumo.numpy())}")
-log(f"JAX hand for TSUMO ({int(sum(jax_hand_tsumo))} tiles): {short_hand(np.array(jax_hand_tsumo))}")
+log(f"JAX hand for TSUMO ({int(jnp.sum(jax_hand_tsumo))} tiles): {short_hand(np.array(jax_hand_tsumo))}")
 
 log("Calling JAX Yaku.judge for TSUMO...")
+jax_fan_tsumo, jax_fu_tsumo = None, None
 try:
     jax_yaku_tsumo, jax_fan_tsumo, jax_fu_tsumo = JaxYaku.judge(
-        jnp.array(jax_hand_tsumo), jnp.bool_(False), p, js)
+        jax_hand_tsumo, jnp.bool_(False), p, js)
     log(f"  JAX: fan={jax_fan_tsumo} fu={jax_fu_tsumo}")
 except Exception as e:
     log(f"  JAX ERROR: {e}")
@@ -130,5 +130,5 @@ log(f"  PT:  fan={pt_fan_tsumo} fu={pt_fu_tsumo}")
 
 # ── Summary ──
 log(f"\n=== SUMMARY ===")
-log(f"RON:  JAX fan={jax_fan_ron if 'jax_fan_ron' in dir() else 'ERR'}  PT fan={pt_fan_ron}")
-log(f"TSUMO: JAX fan={jax_fan_tsumo if 'jax_fan_tsumo' in dir() else 'ERR'}  PT fan={pt_fan_tsumo}")
+log(f"RON:  JAX fan={jax_fan_ron}  PT fan={pt_fan_ron}")
+log(f"TSUMO: JAX fan={jax_fan_tsumo}  PT fan={pt_fan_tsumo}")
