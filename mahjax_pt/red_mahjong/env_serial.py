@@ -1185,25 +1185,30 @@ class RedMahjongSerial(Env):
 
         Matches JAX's yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile.
         Column layout (same as JAX):
-          col 0 = RON  on the discarded tile (used by _make_legal_action_mask_after_discard)
-          col 1 = TSUMO on the next deck tile (copied to col 0 by _draw for tsumo check)
+          col 0 = RON  on the discarded tile
+          col 1 = TSUMO on the next deck tile
 
-        For RON: adds discarded_tile to each player's hand (14 tiles for complete win check).
-        For TSUMO: adds next deck tile to each player's hand (14 tiles for complete win check).
+        JAX creates ron_state (target=discard) and tsumo_state (last_draw=next_tile)
+        before calling Yaku.judge. We simulate this by temporarily mutating the state.
         """
         nxt = int(state.round_state.next_deck_ix)
         lst = int(state.round_state.last_deck_ix)
         if nxt < lst:
-            return  # No more tiles to draw
+            return
 
         next_tile = int(state.round_state.deck[nxt])
         disc_tile = int(discarded_tile) if isinstance(discarded_tile, (torch.Tensor, np.generic)) else discarded_tile
 
+        # Save original state fields that we'll temporarily mutate
+        orig_target = state.round_state.target
+        orig_last_draw = state.round_state.last_draw
+
         for p in range(4):
             hand_p = state.players.hand_with_red[p]
 
-            # RON on the discarded tile (is_ron=True) — col 0
-            # Must add the discarded tile to form a complete 14-tile winning hand
+            # RON on the discarded tile — col 0
+            # JAX: ron_state = _replace_state(state, target=jnp.int8(tile))
+            state.round_state.target = disc_tile
             try:
                 hand_for_ron = Hand.add(hand_p, disc_tile)
                 _, fan_ron, fu_ron = Yaku.judge(hand_for_ron, True, p, state)
@@ -1213,10 +1218,12 @@ class RedMahjongSerial(Env):
                 state.players.fan[p, 0] = fan_r
                 state.players.fu[p, 0] = fu_r
             except (IndexError, Exception):
-                pass  # Invalid hand pattern — keep default (no yaku)
+                pass
 
-            # TSUMO on the next draw tile (is_ron=False) — col 1
-            # Add the next deck tile to form a complete 14-tile winning hand
+            # TSUMO on the next draw tile — col 1
+            # JAX: tsumo_state = _replace_state(state, last_draw=jnp.int8(next_tile))
+            state.round_state.target = orig_target  # restore; TSUMO doesn't use target
+            state.round_state.last_draw = next_tile
             try:
                 hand_for_tsumo = Hand.add(hand_p, next_tile)
                 _, fan_tsumo, fu_tsumo = Yaku.judge(hand_for_tsumo, False, p, state)
@@ -1226,7 +1233,11 @@ class RedMahjongSerial(Env):
                 state.players.fan[p, 1] = fan_t
                 state.players.fu[p, 1] = fu_t
             except (IndexError, Exception):
-                pass  # Invalid hand pattern (e.g. 5+ copies of same tile) — keep defaults
+                pass
+
+        # Restore original state
+        state.round_state.target = orig_target
+        state.round_state.last_draw = orig_last_draw
 
     def _finalize_game(self, state):
         """Apply final placement bonuses and mark game as terminated."""
