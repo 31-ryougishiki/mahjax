@@ -578,7 +578,7 @@ class Yaku:
             fu_best = 25
 
         # ── Best-only yaku updates ──
-        yaku_best[YI.AllSimples] = ~(has_honor or has_outside_in_flatten)
+        yaku_best[YI.AllSimples] = not (has_honor or has_outside_in_flatten)
         yaku_best[YI.HalfFlush] = is_flush and has_honor
         yaku_best[YI.FullFlush] = is_flush and (not has_honor)
         yaku_best[YI.AllTerminalsAndHonors] = not has_tanyao
