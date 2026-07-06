@@ -391,7 +391,11 @@ class RedMahjongSerial(Env):
 
         state.step_count += 1
 
-        # Auto round transition
+        # Single-round termination (JAX: terminated_round & one_round → terminated=TRUE)
+        if self.one_round and state.round_state.terminated_round:
+            state.terminated = True
+
+        # Auto round transition (multi-round only)
         if self.next_round_style == "auto" and not self.one_round and not is_terminal_before:
             if state.round_state.terminated_round and not state.terminated:
                 if profile: _t0 = _time.time()
@@ -787,11 +791,6 @@ class RedMahjongSerial(Env):
 
         state.players.has_won[cp] = True
         state.round_state.terminated_round = True
-
-        if self.one_round:
-            self._finalize_game(state)
-        elif state.round_state.round + 1 >= self.round_limit:
-            self._finalize_game(state)
         return state
 
     # ── _tsumo ──
@@ -822,11 +821,6 @@ class RedMahjongSerial(Env):
 
         state.players.has_won[cp] = True
         state.round_state.terminated_round = True
-
-        if self.one_round:
-            self._finalize_game(state)
-        elif state.round_state.round + 1 >= self.round_limit:
-            self._finalize_game(state)
         return state
 
     # ── Settlement ──
@@ -1087,8 +1081,6 @@ class RedMahjongSerial(Env):
             state.round_state.score[p] -= total
             state.rewards[p] -= total
 
-        if self.one_round:
-            self._finalize_game(state)
         return state
 
     # ── _advance_to_next_round_auto ──
@@ -1257,15 +1249,12 @@ class RedMahjongSerial(Env):
         state.round_state.last_draw = orig_last_draw
 
     def _finalize_game(self, state):
-        """Apply final placement bonuses and mark game as terminated."""
-        state.terminated = True
-        scores = state.round_state.score
-        for p in range(4):
-            scores[p] += state.round_state.order_points[p]
+        """Mark game as terminated (JAX: just sets terminated=True).
 
-        base = STARTING_POINTS // 100
-        for p in range(4):
-            delta = int(scores[p].item()) - base + state.round_state.order_points[p].item()
-            state.rewards[p] = float(delta)
+        Score/reward finalization only happens in _advance_to_next_round_auto
+        for multi-round mode, not here.
+        """
+        state.terminated = True
+        return state
 
         return state
