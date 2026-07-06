@@ -101,12 +101,15 @@ try:
     jax_yaku_ron, jax_fan_ron, jax_fu_ron = JaxYaku.judge(
         jax_hand_ron, jnp.bool_(True), p, js)
     log(f"  JAX: fan={jax_fan_ron} fu={jax_fu_ron}")
+    log(f"  JAX yaku indices: {[i for i,v in enumerate(np.array(jax_yaku_ron)) if v]}")
 except Exception as e:
     log(f"  JAX ERROR: {e}")
 
 log("Calling PT Yaku.judge for RON...")
 pt_yaku_ron, pt_fan_ron, pt_fu_ron = PtYaku.judge(pt_hand_ron, True, p, ps)
 log(f"  PT:  fan={pt_fan_ron} fu={pt_fu_ron}")
+pt_ron_idx = [i for i,v in enumerate(pt_yaku_ron) if v]
+log(f"  PT  yaku indices: {pt_ron_idx}")
 
 # ── TSUMO test: hand + next deck tile ──
 log(f"\n--- TSUMO: hand + next deck tile ({next_tile}) ---")
@@ -121,12 +124,15 @@ try:
     jax_yaku_tsumo, jax_fan_tsumo, jax_fu_tsumo = JaxYaku.judge(
         jax_hand_tsumo, jnp.bool_(False), p, js)
     log(f"  JAX: fan={jax_fan_tsumo} fu={jax_fu_tsumo}")
+    log(f"  JAX yaku indices: {[i for i,v in enumerate(np.array(jax_yaku_tsumo)) if v]}")
 except Exception as e:
     log(f"  JAX ERROR: {e}")
 
 log("Calling PT Yaku.judge for TSUMO...")
 pt_yaku_tsumo, pt_fan_tsumo, pt_fu_tsumo = PtYaku.judge(pt_hand_tsumo, False, p, ps)
 log(f"  PT:  fan={pt_fan_tsumo} fu={pt_fu_tsumo}")
+pt_tsumo_idx = [i for i,v in enumerate(pt_yaku_tsumo) if v]
+log(f"  PT  yaku indices: {pt_tsumo_idx}")
 
 # ── Summary ──
 log(f"\n=== SUMMARY ===")
