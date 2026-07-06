@@ -71,9 +71,13 @@ fields = [
     ("dealer",          lambda s: s.round_state.dealer),
     ("round/honba",     lambda s: (s.round_state.round, s.round_state.honba)),
     ("riichi",          lambda s: s.players.riichi),
+    ("riichi_declared", lambda s: s.players.riichi_declared),
     ("has_won",         lambda s: s.players.has_won),
     ("n_kan",           lambda s: s.players.n_kan),
     ("terminated_round",lambda s: s.round_state.terminated_round),
+    ("last_draw",       lambda s: s.round_state.last_draw),
+    ("last_player",     lambda s: s.round_state.last_player),
+    ("target",          lambda s: s.round_state.target),
 ]
 
 print("\n1. Init + copy...", end=" ", flush=True)

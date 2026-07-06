@@ -582,6 +582,7 @@ class RedMahjongSerial(Env):
 
         # Add to river
         d_count = int(state.players.discard_counts[cp].item())
+        # JAX: is_tsumogiri = (tile == Action.TSUMOGIRI). PT uses explicit param.
         is_tsumogiri = (tile == state.round_state.last_draw)
         is_riichi = bool(state.players.riichi_declared[cp])
         state.players.river = River.add_discard(
