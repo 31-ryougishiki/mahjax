@@ -615,7 +615,8 @@ class RedMahjongSerial(Env):
         state.round_state.can_after_kan = False
 
         # Build meld/ron masks for other players
-        state.round_state.target = tt
+        # JAX sets target = tile (raw action), not to_tile_type(tile)
+        state.round_state.target = tile
         state.round_state.last_player = cp
 
         if state.round_state.is_haitei:
