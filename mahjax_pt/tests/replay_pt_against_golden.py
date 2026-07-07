@@ -164,9 +164,17 @@ def replay_seed(seed, init_state, records, verbose=False):
                     gv_np = np.asarray(gv); pv_np = np.asarray(pv)
                     if gv_np.shape != pv_np.shape:
                         sys.stderr.write(f"  {name}: SHAPE MISMATCH G={gv_np.shape} P={pv_np.shape}\n")
-                        sys.stderr.write(f"    G values (first 20): {gv_np.flatten()[:20].tolist()}\n")
-                        sys.stderr.write(f"    P values (first 20): {pv_np.flatten()[:20].tolist()}\n")
                     elif gv_np.size > 20:
+                        n_diff = int(np.sum(gv_np != pv_np))
+                        idx = np.where(gv_np != pv_np)
+                        # For mask: print actual True/False values at diff positions
+                        if 'mask' in name.lower() and n_diff < 30:
+                            sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs\n")
+                            for i in range(min(n_diff, 15)):
+                                pi, ai = idx[0][i], idx[1][i]
+                                sys.stderr.write(f"    P{pi} act{ai}: G={gv_np[pi,ai]} P={pv_np[pi,ai]}\n")
+                        else:
+                            sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {list(zip(idx[0][:5], idx[1][:5]))}\n")
                         n_diff = int(np.sum(gv_np != pv_np))
                         idx = np.where(gv_np != pv_np)
                         first_idx = list(zip(idx[0][:5].tolist(), idx[1][:5].tolist())) if gv_np.ndim > 1 else idx[0][:10].tolist()
