@@ -928,10 +928,9 @@ class RedMahjongSerial(Env):
         state.players.hand_with_red[cp] = Hand.open_kan(hand, target)
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.is_hand_concealed[cp] = False
-        # n_kan is now incremented in _draw_after_kan (JAX: after reading rinshan tile)
+        # n_kan and dora are handled in _draw_after_kan
 
         state.round_state.target = -1  # JAX _open_kan L1490
-        state = self._flip_dora(state)
         state = self._draw_after_kan(state)
         return state
 
@@ -973,14 +972,15 @@ class RedMahjongSerial(Env):
             state.players.melds[cp, n] = meld
             state.players.meld_counts[cp] += 1
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
-        # Note: n_kan is NOT incremented here — JAX _draw_after_kan increments it
-        # AFTER reading the rinshan tile from deck[10 + n_kan]. Incrementing here
-        # would shift the rinshan index by 1, causing a different tile to be drawn.
 
-        # JAX _kan does NOT set last_player — it stays at the previous value (discarder)
-        state.round_state.target = -1  # JAX _draw_after_kan non-robbing branch L1404
+        # JAX _kan does NOT set last_player for non-robbing kan
+        state.round_state.target = -1  # JAX L1404
 
-        state = self._flip_dora(state)
+        # Closed kan: flip dora now (JAX _kan L1353-1368)
+        # Added kan: dora is flipped later in _draw_after_kan
+        if not is_added:
+            state = self._flip_dora(state)
+
         state = self._draw_after_kan(state)
         return state
 
@@ -1070,17 +1070,44 @@ class RedMahjongSerial(Env):
         return state
 
     def _draw_after_kan(self, state):
-        """Draw replacement tile after a kan (rinshan draw)."""
+        """Draw replacement tile after a kan (rinshan draw).
+
+        JAX flow (lines 1233-1319):
+          Closed kan: dora pre-flipped in _kan → skip here, no last_deck_ix extension here
+          Open/added kan: flip dora here, extend last_deck_ix here
+          All types: n_kan += 1 (after reading rinshan), ippatsu=0,
+                     kan_declared=False, can_after_kan=True
+        """
         cp = state.current_player
         n_kan = int(state.players.n_kan.sum().item())
         ix = 10 + n_kan
         tile = int(state.round_state.deck[ix].item())
-        state.players.n_kan[cp] += 1  # JAX _draw_after_kan increments n_kan AFTER reading rinshan
-        state.round_state.last_deck_ix += 1  # JAX extends dead wall for ALL kan types
-        state.round_state.last_draw = tile
-        state.round_state.kan_declared = True
+
+        # JAX: n_kan incremented AFTER reading rinshan tile
+        state.players.n_kan[cp] += 1
+
+        # Dora handling: detect if already flipped (closed kan via _selfkan)
+        kan_dora_pre_flipped = int(state.round_state.n_kan_doras) > n_kan
+        if not kan_dora_pre_flipped:
+            # Open / added kan: flip dora now (JAX _after_kan_flip_dora)
+            n_dora = int(state.round_state.n_kan_doras)
+            dora_idx = 9 - 2 * (n_dora + 1)
+            ura_idx = 8 - 2 * (n_dora + 1)
+            if n_dora + 1 < MAX_DORA_INDICATORS and dora_idx >= 0:
+                state.round_state.dora_indicators[n_dora + 1] = int(state.round_state.deck[dora_idx].item())
+                state.round_state.ura_dora_indicators[n_dora + 1] = int(state.round_state.deck[ura_idx].item())
+                state.round_state.n_kan_doras += 1
+
+        # JAX always extends dead wall (in _after_kan_flip_dora for open/added,
+        # in _kan for closed kan). Net: +1 for all kan types.
+        state.round_state.last_deck_ix += 1
+
+        # JAX resets per-kan flags
+        state.players.ippatsu[cp] = False
+        state.round_state.kan_declared = False
         state.round_state.can_after_kan = True
-        state.round_state.can_robbing_kan = True
+
+        state.round_state.last_draw = tile
 
         state.players.hand_with_red[cp] = Hand.add(state.players.hand_with_red[cp], tile)
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
