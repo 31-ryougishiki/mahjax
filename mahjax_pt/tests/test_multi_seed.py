@@ -30,7 +30,7 @@ def copy_to_pt(js, ps):
         setattr(pp, f, torch.from_numpy(np.array(getattr(jp, f)).copy()).to(dt))
     jr, pr = js.round_state, ps.round_state
     for f in ['round', 'honba', 'kyotaku', 'dealer', 'next_deck_ix', 'last_deck_ix',
-              'last_draw', 'last_player', 'target']:
+              'last_draw', 'last_player', 'target', 'n_kan_doras']:
         setattr(pr, f, int(getattr(jr, f)))
     for f in ['terminated_round', 'draw_next', 'is_haitei', 'kan_declared', 'can_after_kan',
               'is_abortive_draw_normal']:
