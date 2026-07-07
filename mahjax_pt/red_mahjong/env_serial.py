@@ -1076,6 +1076,7 @@ class RedMahjongSerial(Env):
         ix = 10 + n_kan
         tile = int(state.round_state.deck[ix].item())
         state.players.n_kan[cp] += 1  # JAX _draw_after_kan increments n_kan AFTER reading rinshan
+        state.round_state.last_deck_ix += 1  # JAX extends dead wall for ALL kan types
         state.round_state.last_draw = tile
         state.round_state.kan_declared = True
         state.round_state.can_after_kan = True
