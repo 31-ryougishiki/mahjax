@@ -26,7 +26,7 @@ def jax_to_dict(state):
     d['terminated'] = bool(state.terminated)
     d['truncated'] = bool(state.truncated)
     d['step_count'] = int(state.step_count)
-    d['legal_action_mask'] = np.array(state.legal_action_mask)
+    d['players.legal_action_mask'] = np.array(state.players.legal_action_mask)  # (4, 87)
     d['rewards'] = np.array(state.rewards)
 
     # Player state

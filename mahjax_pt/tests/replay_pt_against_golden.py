@@ -17,7 +17,7 @@ from mahjax_pt.red_mahjong.env_serial import RedMahjongSerial as PtEnv
 CHECKS = [
     ('current_player',           lambda s,n: s.current_player,             'exact'),
     ('terminated',               lambda s,n: s.terminated,                 'exact'),
-    ('legal_action_mask',        lambda s,n: s.legal_action_mask,         'exact'),
+    ('players.legal_action_mask', lambda s,n: s.players.legal_action_mask, 'exact'),
     ('rewards',                  lambda s,n: s.rewards,                   'close'),
     ('players.hand',             lambda s,n: s.players.hand,              'exact'),
     ('players.hand_with_red',    lambda s,n: s.players.hand_with_red,     'exact'),
