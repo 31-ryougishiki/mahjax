@@ -351,12 +351,7 @@ class RedMahjongSerial(Env):
                 if m != EMPTY_MELD and Meld.is_pon(m) and Meld.target(m) == tile_type:
                     is_added = True
                     break
-            import sys
-            sys.stderr.write(f'[SELFKAN] cp={cp} action={action} tile_type={tile_type} is_added={is_added} n_kan_sum={int(state.players.n_kan.sum().item())} meld_counts_cp={int(state.players.meld_counts[cp].item())}\n')
-            sys.stderr.flush()
             state = self._selfkan(state, action, is_added)
-            sys.stderr.write(f'[SELFKAN after] hand_cp_sum={int(state.players.hand_with_red[cp].sum().item())} n_kan_sum={int(state.players.n_kan.sum().item())} last_draw={int(state.round_state.last_draw)} last_player={int(state.round_state.last_player)}\n')
-            sys.stderr.flush()
             if profile: _t['selfkan'] = _time.time() - _t0
         elif action == Action.TSUMOGIRI:
             if profile: _t0 = _time.time()
@@ -411,6 +406,10 @@ class RedMahjongSerial(Env):
                 if profile: _t0 = _time.time()
                 state = self._advance_to_next_round_auto(state)
                 if profile: _t['advance'] = _time.time() - _t0
+
+        # JAX step L345-349: when terminated, set mask to all-ones
+        if state.terminated:
+            state.legal_action_mask[:] = True
 
         if profile:
             state._profile = _t
@@ -526,13 +525,16 @@ class RedMahjongSerial(Env):
         hand = state.players.hand_with_red[cp]
         mask = ZERO_MASK_1D.clone()
 
-        # Discard actions
+        # Discard actions — all tiles with count > 0 EXCEPT last_draw (needs >=2)
+        # JAX: tiles_ok = (hand > 0); tiles_ok[new_tile] = (hand[new_tile] >= 2)
         for i in range(Tile.NUM_TILE_TYPE_WITH_RED):
             if hand[i] > 0:
                 mask[i] = True
-
-        # Tsumogiri
         ld = int(state.round_state.last_draw)
+        if ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED:
+            mask[ld] = (hand[ld] >= 2)  # last_draw tile only if 2+ copies
+
+        # Tsumogiri — always available if last_draw is valid
         mask[Action.TSUMOGIRI] = (ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED and hand[ld] > 0)
 
         # Self kan — blocked by haitei or 4-kan limit
@@ -574,6 +576,49 @@ class RedMahjongSerial(Env):
 
         return mask
 
+    # ── Legal action masks after meld (kuikae restrictions) ──
+    # JAX: _make_legal_action_mask_after_chi L1577-1596
+    #       _pon inline mask L1517-1524
+
+    def _make_legal_action_mask_after_pon(self, state):
+        """Legal actions after PON — prohibits discarding the claimed tile type (kuikae)."""
+        cp = state.current_player
+        hand = state.players.hand_with_red[cp]
+        tar = state.round_state.target  # raw tile (may be red five)
+
+        mask_4p = ZERO_MASK_2D.clone()
+        m = mask_4p[cp]
+        for i in range(Tile.NUM_TILE_TYPE_WITH_RED):
+            if hand[i] > 0:
+                m[i] = True
+        # Kuikae: can't discard the exact claimed tile
+        m[tar] = False
+        mask_4p[cp] = m
+        return mask_4p
+
+    def _make_legal_action_mask_after_chi(self, state, action):
+        """Legal actions after CHI — kuikae: prohibit claimed tile and 喰いかえ tile."""
+        cp = state.current_player
+        target = state.round_state.target
+        hand = state.players.hand_with_red[cp]
+
+        mask_4p = ZERO_MASK_2D.clone()
+        m = mask_4p[cp]
+        for i in range(Tile.NUM_TILE_TYPE_WITH_RED):
+            if hand[i] > 0:
+                m[i] = True
+
+        # Kuikae: prohibit the claimed tile type (regular + red variants)
+        m = _set_tile_type_action(m, Tile.to_tile_type(target), False)
+
+        # Kuikae: additionally prohibit the alternate-sequence tile for CHI_L/CHI_R
+        prohib = Meld.prohibitive_tile_type_after_chi(action, target)
+        if prohib >= 0:
+            m = _set_tile_type_action(m, prohib, False)
+
+        mask_4p[cp] = m
+        return mask_4p
+
     # ── _discard ──
     # JAX: _discard lines 988-1051
 
@@ -613,8 +658,9 @@ class RedMahjongSerial(Env):
         state.players.discards[cp, d_count] = tile
         state.players.discard_counts[cp] += 1
 
-        # Clear riichi_declared
-        state.players.riichi_declared[cp] = False
+        # riichi_declared is NOT cleared here — JAX preserves it so
+        # _accept_riichi (called at top of _draw) can process the payment
+        # and set the permanent riichi flag.
 
         # Furiten
         h_after = state.players.hand_with_red[cp]
@@ -889,6 +935,9 @@ class RedMahjongSerial(Env):
 
     def _pon(self, state, action):
         """Handle a PON action."""
+        # JAX _pon L1506: accept riichi first
+        state = _accept_riichi(state)
+
         cp = state.current_player
         target = state.round_state.target
         hand = state.players.hand_with_red[cp]
@@ -905,9 +954,14 @@ class RedMahjongSerial(Env):
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.is_hand_concealed[cp] = False
 
+        # JAX _pon L1526: target=-1, PASS removed, ippatsu cleared
+        # Build mask BEFORE clearing target (kuikae needs it)
+        mask_4p = self._make_legal_action_mask_after_pon(state)
         state.round_state.target = -1     # JAX _pon L1526
         state.round_state.draw_next = False
-        state.legal_action_mask = self._make_legal_action_mask_after_draw(state)
+        state.legal_action_mask = mask_4p[cp]
+        state.players.legal_action_mask = mask_4p
+        state.players.ippatsu[:] = False  # JAX _pon L1534
         state.current_player = cp
         return state
 
@@ -932,6 +986,13 @@ class RedMahjongSerial(Env):
         # n_kan and dora are handled in _draw_after_kan
 
         state.round_state.target = -1  # JAX _open_kan L1490
+
+        # JAX _kan calls yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile
+        # with the post-kan hand. Precompute with the rinshan tile as tsumo target.
+        n_kan_before = int(state.players.n_kan.sum().item())
+        rinshan = int(state.round_state.deck[10 + n_kan_before].item())
+        self._precompute_yaku(state, target, tsumo_tile=rinshan)
+
         state = self._draw_after_kan(state)
         return state
 
@@ -982,11 +1043,20 @@ class RedMahjongSerial(Env):
         if not is_added:
             state = self._flip_dora(state)
 
+        # JAX _kan calls yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile
+        # with the post-kan hand. Precompute with the rinshan tile as tsumo target.
+        n_kan_before = int(state.players.n_kan.sum().item())
+        rinshan = int(state.round_state.deck[10 + n_kan_before].item())
+        self._precompute_yaku(state, tile_type, tsumo_tile=rinshan)
+
         state = self._draw_after_kan(state)
         return state
 
     def _chi(self, state, action):
         """Handle a CHI action."""
+        # JAX _chi L1548: accept riichi first
+        state = _accept_riichi(state)
+
         cp = state.current_player
         target = state.round_state.target
         hand = state.players.hand_with_red[cp]
@@ -1003,9 +1073,14 @@ class RedMahjongSerial(Env):
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.is_hand_concealed[cp] = False
 
+        # JAX _chi L1565: target=-1, PASS removed, ippatsu cleared
+        # Build mask BEFORE clearing target (kuikae needs it)
+        mask_4p = self._make_legal_action_mask_after_chi(state, action)
         state.round_state.target = -1  # JAX _chi L1565
         state.round_state.draw_next = False
-        state.legal_action_mask = self._make_legal_action_mask_after_draw(state)
+        state.legal_action_mask = mask_4p[cp]
+        state.players.legal_action_mask = mask_4p
+        state.players.ippatsu[:] = False  # JAX _chi L1572
         state.current_player = cp
         return state
 
@@ -1060,13 +1135,17 @@ class RedMahjongSerial(Env):
     # ═════════════════════════════════════════════════════════════
 
     def _flip_dora(self, state):
-        """Flip the next dora indicator after a kan (matches JAX deck indexing)."""
+        """Flip the next dora indicator after a kan (matches JAX deck indexing).
+
+        JAX uses n_kan_doras + 1 for both deck index and write index because
+        n_kan_doras slots are already occupied (initial dora at index 0).
+        """
         n_dora = int(state.round_state.n_kan_doras)
-        dora_idx = 9 - 2 * n_dora
-        ura_idx = 8 - 2 * n_dora
-        if n_dora < MAX_DORA_INDICATORS and dora_idx >= 0:
-            state.round_state.dora_indicators[n_dora] = int(state.round_state.deck[dora_idx].item())
-            state.round_state.ura_dora_indicators[n_dora] = int(state.round_state.deck[ura_idx].item())
+        dora_idx = 9 - 2 * (n_dora + 1)
+        ura_idx = 8 - 2 * (n_dora + 1)
+        if n_dora + 1 < MAX_DORA_INDICATORS and dora_idx >= 0:
+            state.round_state.dora_indicators[n_dora + 1] = int(state.round_state.deck[dora_idx].item())
+            state.round_state.ura_dora_indicators[n_dora + 1] = int(state.round_state.deck[ura_idx].item())
             state.round_state.n_kan_doras += 1
         return state
 
@@ -1112,6 +1191,14 @@ class RedMahjongSerial(Env):
 
         state.players.hand_with_red[cp] = Hand.add(state.players.hand_with_red[cp], tile)
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
+
+        # JAX copies tsumo yaku precompute → col 0 (matching _draw L834-836)
+        state.players.has_yaku[cp, 0] = state.players.has_yaku[cp, 1].clone()
+        state.players.fan[cp, 0] = state.players.fan[cp, 1].clone()
+        state.players.fu[cp, 0] = state.players.fu[cp, 1].clone()
+
+        # Rinshan draws are never haitei (JAX _draw_after_kan L1289)
+        state.round_state.is_haitei = False
 
         state.round_state.draw_next = False
         mask = self._make_legal_action_mask_after_draw(state)
@@ -1253,13 +1340,13 @@ class RedMahjongSerial(Env):
     # ── Yaku precompute ──
     # JAX: yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile (L225-252)
 
-    def _precompute_yaku(self, state, discarded_tile):
+    def _precompute_yaku(self, state, discarded_tile, tsumo_tile=None):
         """Precompute has_yaku/fan/fu for all 4 players after a discard.
 
         Matches JAX's yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile.
         Column layout (same as JAX):
           col 0 = RON  on the discarded tile
-          col 1 = TSUMO on the next deck tile
+          col 1 = TSUMO on the next deck tile (or tsumo_tile if provided)
 
         JAX creates ron_state (target=discard) and tsumo_state (last_draw=next_tile)
         before calling Yaku.judge. We simulate this by temporarily mutating the state.
@@ -1267,7 +1354,10 @@ class RedMahjongSerial(Env):
         nxt = int(state.round_state.next_deck_ix)
         # JAX always computes yaku regardless of wall state.
         # When wall is exhausted, deck[nxt] is still valid.
-        next_tile = int(state.round_state.deck[nxt]) if nxt >= 0 else 0
+        if tsumo_tile is not None:
+            next_tile = int(tsumo_tile) if isinstance(tsumo_tile, (torch.Tensor, np.generic)) else tsumo_tile
+        else:
+            next_tile = int(state.round_state.deck[nxt]) if nxt >= 0 else 0
         disc_tile = int(discarded_tile) if isinstance(discarded_tile, (torch.Tensor, np.generic)) else discarded_tile
 
         # Save original state fields that we'll temporarily mutate

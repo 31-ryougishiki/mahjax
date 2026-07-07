@@ -176,7 +176,10 @@ def replay_seed(seed, init_state, records, verbose=False):
                                     pi, ai = int(idx[0][i]), int(idx[1][i])
                                     sys.stderr.write(f"    P{pi} act{ai}: G={gv_np[pi,ai]} P={pv_np[pi,ai]}\n")
                         else:
-                            sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {list(zip(idx[0][:5], idx[1][:5]))}\n")
+                            if gv_np.ndim >= 2:
+                                sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {list(zip(idx[0][:5], idx[1][:5]))}\n")
+                            else:
+                                sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {idx[0][:10].tolist()}\n")
                     else:
                         sys.stderr.write(f"  {name}: G={gv_np.tolist()} P={pv_np.tolist()}\n")
             break

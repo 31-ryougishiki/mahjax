@@ -505,7 +505,7 @@ class Yaku:
             + wind_pair_fu \
             + dragon_pair_fu \
             + honor_pon_fu \
-            + (1 if is_ron and 27 <= last_tile_type and hand[last_tile_type] == 2 else 0)
+            + (1 if 27 <= last_tile_type and hand[last_tile_type] == 2 else 0)
 
         fu = torch.full((YI.MAX_PATTERNS,), base_fu, dtype=torch.int32)
 
