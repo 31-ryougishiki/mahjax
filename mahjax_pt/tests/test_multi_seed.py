@@ -90,8 +90,11 @@ def describe_diff(name, jv_val, pv_val):
         return f"{n} elems differ, JAX range [{jv_val.min()},{jv_val.max()}] PT range [{pv_val.min()},{pv_val.max()}]"
 
 
-SEEDS = [1, 7, 13, 42, 99, 123, 256, 512, 1024, 2048]
-print(f"Testing {len(SEEDS)} seeds...", flush=True)
+if len(sys.argv) > 1:
+    SEEDS = [int(s) for s in sys.argv[1:]]
+else:
+    SEEDS = [1, 7, 13, 42, 99, 123, 256, 512, 1024, 2048]
+print(f"Testing {len(SEEDS)} seeds: {SEEDS}", flush=True)
 
 results = []
 for seed in SEEDS:
