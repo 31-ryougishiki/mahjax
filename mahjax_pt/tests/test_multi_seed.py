@@ -146,15 +146,28 @@ def test_seed(seed):
                 a = int(legal[0])
             prev_action = a
             a = int(a)
+            # Check ALL fields BEFORE running the step
+            pre_diffs = compare_all(js, ps)
+            if pre_diffs:
+                fail_step = f'{step}:PRE'
+                fail_act = a
+                fail_fields = pre_diffs
+                sys.stderr.write(f"[FAIL PRE] step={step} act={a} prev_act={prev_action} cp={int(js.current_player)} fields={pre_diffs}\n")
+                for name in pre_diffs:
+                    fn = dict(CHECKS)[name]
+                    jv_val, pv_val = jv(fn(js)), jv(fn(ps))
+                    sys.stderr.write(f"  {name}: {describe_diff(name, jv_val, pv_val)}\n")
+                sys.stderr.flush()
+                break
             js = jenv.step(js, a)
             ps = penv.step(ps, a)
+            # Check AFTER step
             diffs = compare_all(js, ps)
             if diffs:
                 fail_step = step
                 fail_act = a
                 fail_fields = diffs
-                # Dump detailed context for the failing step
-                sys.stderr.write(f"[FAIL] step={step} act={a} prev_act={prev_action} cp={int(js.current_player)} fields={diffs}\n")
+                sys.stderr.write(f"[FAIL POST] step={step} act={a} prev_act={prev_action} cp={int(js.current_player)} fields={diffs}\n")
                 sys.stderr.write(f"  legal: {list(legal)}\n")
                 for name in diffs:
                     fn = dict(CHECKS)[name]
