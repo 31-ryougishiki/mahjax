@@ -64,7 +64,11 @@ def pt_val(v):
 def _copy_golden_to_pt(golden, state):
     """Copy JAX golden init state into a PT state — explicit per-field to avoid bugs."""
     # Top-level env fields
+    sys.stderr.write(f"[COPY] current_player golden={golden.get('current_player','MISSING')} type={type(golden.get('current_player','?')).__name__}\n")
+    sys.stderr.write(f"[COPY] state type={type(state).__name__}, state.cp before={state.current_player}\n")
     state.current_player = int(golden['current_player'])
+    sys.stderr.write(f"[COPY] state.cp after={state.current_player}\n")
+    sys.stderr.flush()
     state.terminated = bool(golden['terminated'])
     state.truncated = bool(golden.get('truncated', False))
     state.step_count = int(golden.get('step_count', 0))
