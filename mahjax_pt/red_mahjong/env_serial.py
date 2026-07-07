@@ -344,8 +344,14 @@ class RedMahjongSerial(Env):
         elif Action.is_selfkan(action):
             if profile: _t0 = _time.time()
             tile_type = action - 37
-            is_added = Hand.can_added_kan(
-                state.players.hand_with_red[state.current_player], tile_type)
+            # JAX: is_added_kan = pon != 0 (checks meld list for existing PON)
+            cp = state.current_player
+            is_added = False
+            for m_idx in range(int(state.players.meld_counts[cp].item())):
+                m = int(state.players.melds[cp, m_idx].item())
+                if m != EMPTY_MELD and Meld.is_pon(m) and Meld.target(m) == tile_type:
+                    is_added = True
+                    break
             state = self._selfkan(state, action, is_added)
             if profile: _t['selfkan'] = _time.time() - _t0
         elif action == Action.TSUMOGIRI:
