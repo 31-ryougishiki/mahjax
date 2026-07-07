@@ -486,6 +486,7 @@ class RedMahjongSerial(Env):
             mask = self._make_legal_action_mask_after_draw(state)
 
         state.legal_action_mask = mask
+        state.players.legal_action_mask[cp, :] = mask  # JAX updates per-player mask too
         state.round_state.draw_next = False
         state.round_state.kan_declared = False
         state.round_state.target = -1
@@ -1113,7 +1114,9 @@ class RedMahjongSerial(Env):
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
 
         state.round_state.draw_next = False
-        state.legal_action_mask = self._make_legal_action_mask_after_draw(state)
+        mask = self._make_legal_action_mask_after_draw(state)
+        state.legal_action_mask = mask
+        state.players.legal_action_mask[cp, :] = mask
         return state
 
     def _abortive_draw_normal(self, state):
