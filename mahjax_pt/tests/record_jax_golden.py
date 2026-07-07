@@ -81,6 +81,8 @@ def record_seed(seed, output_dir):
         state = jenv.init(jax.random.PRNGKey(seed))
         sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} running steps...\n"); sys.stderr.flush()
 
+        # Save initial state first (right after init)
+        init_state = jax_to_dict(state)
         records = []
         for step in range(200):
             if bool(state.terminated) or bool(state.round_state.terminated_round):
@@ -93,7 +95,7 @@ def record_seed(seed, output_dir):
 
         path = os.path.join(output_dir, f'golden_seed_{seed:04d}.pkl')
         with open(path, 'wb') as f:
-            pickle.dump({'seed': seed, 'records': records}, f)
+            pickle.dump({'seed': seed, 'init_state': init_state, 'records': records}, f)
 
         dt = time.time() - t0
         sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} done: {len(records)} steps ({dt:.0f}s)\n"); sys.stderr.flush()

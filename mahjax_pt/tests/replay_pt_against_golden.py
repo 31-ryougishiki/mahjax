@@ -61,6 +61,41 @@ def pt_val(v):
     return np.asarray(v)
 
 
+def _copy_golden_to_pt(golden, state):
+    """Copy JAX golden init state into a PT state."""
+    state.current_player = int(golden['current_player'])
+    state.terminated = bool(golden['terminated'])
+    state.legal_action_mask = torch.from_numpy(golden['legal_action_mask'].copy()).bool()
+    state.rewards = torch.from_numpy(golden['rewards'].copy()).float()
+
+    # Player fields
+    pp = state.players
+    for key, val in golden.items():
+        if not key.startswith('players.'):
+            continue
+        fname = key.split('.', 1)[1]
+        if hasattr(pp, fname):
+            arr = val.copy()
+            dt = getattr(pp, fname).dtype
+            setattr(pp, fname, torch.from_numpy(arr).to(dt))
+
+    # Round fields
+    pr = state.round_state
+    for key, val in golden.items():
+        if not key.startswith('round_state.'):
+            continue
+        fname = key.split('.', 1)[1]
+        if not hasattr(pr, fname):
+            continue
+        if isinstance(val, np.ndarray):
+            dt = getattr(pr, fname).dtype
+            setattr(pr, fname, torch.from_numpy(val.copy()).to(dt))
+        elif isinstance(val, (bool, np.bool_)):
+            setattr(pr, fname, bool(val))
+        else:
+            setattr(pr, fname, int(val))
+
+
 def compare_one(golden_val, pt_val, tolerance):
     if tolerance == 'exact':
         return np.array_equal(np.asarray(golden_val), np.asarray(pt_val))
@@ -68,11 +103,13 @@ def compare_one(golden_val, pt_val, tolerance):
         return np.allclose(np.asarray(golden_val), np.asarray(pt_val), rtol=1e-3, atol=1e-5)
 
 
-def replay_seed(seed, records, verbose=False):
+def replay_seed(seed, init_state, records, verbose=False):
     """Replay one seed's records against PT. Returns (seed, ok, details)."""
     t0 = time.time()
     penv = PtEnv(round_mode='single')
-    state = penv.init(key=0)  # dummy init, state will diverge but actions force alignment
+    state = penv.init(key=0)
+    # Copy JAX init state into PT so we start from the same point
+    _copy_golden_to_pt(init_state, state)
 
     ok_steps = 0
     first_fail = None
@@ -143,7 +180,7 @@ if __name__ == '__main__':
         seed = data['seed']
         records = data['records']
         verbose = len(args.seeds or []) <= 3  # detail for small runs
-        seed, ok, d = replay_seed(seed, records, verbose=verbose)
+        seed, ok, d = replay_seed(seed, data['init_state'], records, verbose=verbose)
         if ok:
             print(f"seed={seed:4d}: OK ({d['steps']} steps, {d['time']:.1f}s)", flush=True)
             n_pass += 1
