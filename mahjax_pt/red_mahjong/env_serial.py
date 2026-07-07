@@ -633,7 +633,11 @@ class RedMahjongSerial(Env):
         state.round_state.target = tile
         state.round_state.last_player = cp
 
-        if state.round_state.is_haitei:
+        # JAX: is_haitei = is_haitei | is_abortive_draw_normal
+        if state.round_state.next_deck_ix < state.round_state.last_deck_ix:
+            state.round_state.is_abortive_draw_normal = True
+            state.round_state.is_haitei = True
+        elif state.round_state.is_haitei:
             state.round_state.is_abortive_draw_normal = True
 
         # Precompute yaku for all 4 players (matches JAX
@@ -924,7 +928,7 @@ class RedMahjongSerial(Env):
         state.players.hand_with_red[cp] = Hand.open_kan(hand, target)
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.is_hand_concealed[cp] = False
-        state.players.n_kan[cp] += 1
+        # n_kan is now incremented in _draw_after_kan (JAX: after reading rinshan tile)
 
         state.round_state.target = -1  # JAX _open_kan L1490
         state = self._flip_dora(state)
@@ -944,19 +948,20 @@ class RedMahjongSerial(Env):
         tile_type = action - 37
 
         if is_added:
-            # Find the existing PON meld slot and replace it (JAX _added_kan)
+            # Find the existing PON meld slot and its src (JAX _added_kan uses pon field)
             pon_idx = -1
+            pon_src = 1  # default
             for m_idx in range(int(state.players.meld_counts[cp].item())):
                 m = int(state.players.melds[cp, m_idx].item())
                 if m != EMPTY_MELD and Meld.is_pon(m) and Meld.target(m) == tile_type:
                     pon_idx = m_idx
+                    pon_src = Meld.src(m) if hasattr(Meld, 'src') else 1
                     break
-            meld = Meld.init(action, tile_type, 1)
+            meld = Meld.init(action, tile_type, pon_src)  # use original PON's src
             state.players.hand_with_red[cp] = Hand.added_kan(hand, tile_type)
             if pon_idx >= 0:
                 state.players.melds[cp, pon_idx] = meld  # replace, don't increment count
             else:
-                # Fallback: should not happen, but handle gracefully
                 n = int(state.players.meld_counts[cp].item())
                 state.players.melds[cp, n] = meld
                 state.players.meld_counts[cp] += 1
