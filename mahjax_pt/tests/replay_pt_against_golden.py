@@ -64,11 +64,7 @@ def pt_val(v):
 def _copy_golden_to_pt(golden, state):
     """Copy JAX golden init state into a PT state — explicit per-field to avoid bugs."""
     # Top-level env fields
-    sys.stderr.write(f"[COPY] current_player golden={golden.get('current_player','MISSING')} type={type(golden.get('current_player','?')).__name__}\n")
-    sys.stderr.write(f"[COPY] state type={type(state).__name__}, state.cp before={state.current_player}\n")
     state.current_player = int(golden['current_player'])
-    sys.stderr.write(f"[COPY] state.cp after={state.current_player}\n")
-    sys.stderr.flush()
     state.terminated = bool(golden['terminated'])
     state.truncated = bool(golden.get('truncated', False))
     state.step_count = int(golden.get('step_count', 0))
@@ -145,32 +141,23 @@ def replay_seed(seed, init_state, records, verbose=False):
 
         state = penv.step(state, action)
 
-        if step == 0:
-            sys.stderr.write(f"[DEBUG step0] state.cp={state.current_player} type={type(state.current_player).__name__}\n")
-            sys.stderr.write(f"[DEBUG step0] pp.hand shape={state.players.hand.shape} sum={state.players.hand.sum().item()}\n")
-            sys.stderr.write(f"[DEBUG step0] golden cp={golden.get('current_player','?')} type={type(golden.get('current_player','?')).__name__}\n")
-            sys.stderr.flush()
-
         diffs = []
-        for name, accessor, tol in CHECKS:
+        for name, accessor_fn, tol in CHECKS:
             if name not in golden:
                 continue
             gv = golden[name]
-            pv_raw = accessor(state, name)
-            pv = pt_val(pv_raw)
-            if name == 'current_player' and step < 3:
-                sys.stderr.write(f"[CMP] {name}: raw={pv_raw} type={type(pv_raw).__name__} pv={pv} pv.shape={np.asarray(pv).shape}\n")
-                sys.stderr.write(f"[CMP] state.cp={state.current_player} state.rewards={state.rewards}\n")
-                sys.stderr.flush()
+            pv = pt_val(accessor_fn(state, name))
             if not compare_one(gv, pv, tol):
                 diffs.append(name)
 
         if diffs:
             first_fail = (step, action, diffs)
             if verbose:
+                # Build accessor map to avoid loop variable capture bug
+                amap = dict((n, a) for n, a, t in CHECKS)
                 for name in diffs[:8]:
                     gv = golden[name]
-                    pv = pt_val(accessor(state, name))
+                    pv = pt_val(amap[name](state, name))
                     gv_np = np.asarray(gv); pv_np = np.asarray(pv)
                     if gv_np.shape != pv_np.shape:
                         sys.stderr.write(f"  {name}: SHAPE MISMATCH G={gv_np.shape} P={pv_np.shape}\n")
