@@ -173,6 +173,18 @@ def test_seed(seed):
                     fn = dict(CHECKS)[name]
                     jv_val, pv_val = jv(fn(js)), jv(fn(ps))
                     sys.stderr.write(f"  {name}: {describe_diff(name, jv_val, pv_val)}\n")
+                # Extra context for specific failures
+                jnx=int(js.round_state.next_deck_ix); pnx=ps.round_state.next_deck_ix
+                jlx=int(js.round_state.last_deck_ix); plx=ps.round_state.last_deck_ix
+                sys.stderr.write(f"  ctx: next_ix J={jnx} P={pnx} last_ix J={jlx} P={plx}\n")
+                sys.stderr.write(f"  ctx: is_haitei J={bool(js.round_state.is_haitei)} P={ps.round_state.is_haitei}\n")
+                sys.stderr.write(f"  ctx: abortive J={bool(js.round_state.is_abortive_draw_normal)} P={ps.round_state.is_abortive_draw_normal}\n")
+                sys.stderr.write(f"  ctx: term_round J={bool(js.round_state.terminated_round)} P={ps.round_state.terminated_round}\n")
+                sys.stderr.write(f"  ctx: last_draw J={int(js.round_state.last_draw)} P={ps.round_state.last_draw}\n")
+                sys.stderr.write(f"  ctx: last_player J={int(js.round_state.last_player)} P={ps.round_state.last_player}\n")
+                sys.stderr.write(f"  ctx: target J={int(js.round_state.target)} P={ps.round_state.target}\n")
+                sys.stderr.write(f"  ctx: draw_next J={bool(js.round_state.draw_next)} P={ps.round_state.draw_next}\n")
+                sys.stderr.write(f"  ctx: n_kan J={np.array(js.players.n_kan).tolist()} P={ps.players.n_kan.numpy().tolist()}\n")
                 sys.stderr.flush()
                 break
             ok_steps += 1
