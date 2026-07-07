@@ -17,6 +17,7 @@ from mahjax_pt.red_mahjong.env_serial import RedMahjongSerial as PtEnv
 CHECKS = [
     ('current_player',           lambda s,n: s.current_player,             'exact'),
     ('terminated',               lambda s,n: s.terminated,                 'exact'),
+    ('legal_action_mask',        lambda s,n: s.legal_action_mask,         'exact'),
     ('rewards',                  lambda s,n: s.rewards,                   'close'),
     ('players.hand',             lambda s,n: s.players.hand,              'exact'),
     ('players.hand_with_red',    lambda s,n: s.players.hand_with_red,     'exact'),
@@ -65,9 +66,7 @@ def _copy_golden_to_pt(golden, state):
     # Top-level env fields
     state.current_player = int(golden['current_player'])
     state.terminated = bool(golden['terminated'])
-    # Env-level mask must match the current player's per-player mask from JAX
-    cp = state.current_player
-    state.legal_action_mask = torch.from_numpy(golden['players.legal_action_mask'][cp].copy()).bool()
+    state.legal_action_mask = torch.from_numpy(golden['legal_action_mask'].copy()).bool()
     state.truncated = bool(golden.get('truncated', False))
     state.step_count = int(golden.get('step_count', 0))
     state.rewards = torch.from_numpy(np.array(golden['rewards'], dtype=np.float32)).float()
