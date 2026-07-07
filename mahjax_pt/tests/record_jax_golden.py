@@ -98,19 +98,25 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('seeds', nargs='*', type=int, help='Seeds to record (default: all 10)')
     p.add_argument('-o', '--output', default='golden_data', help='Output directory')
+    p.add_argument('-j', '--jobs', type=int, default=1, help='Parallel workers')
     args = p.parse_args()
 
     SEEDS = args.seeds if args.seeds else [1, 7, 13, 42, 99, 123, 256, 512, 1024, 2048]
     os.makedirs(args.output, exist_ok=True)
 
-    print(f"Recording {len(SEEDS)} seeds to {args.output}/ ...", flush=True)
-    total_steps = 0
-    t0 = time.time()
+    if getattr(args, 'jobs', 1) > 1:
+        from multiprocessing import get_context
+        n_workers = min(args.jobs, len(SEEDS))
+        print(f"Recording {len(SEEDS)} seeds with {n_workers} workers...", flush=True)
+        with get_context('spawn').Pool(n_workers) as pool:
+            results = pool.starmap(record_seed, [(s, args.output) for s in SEEDS])
+        total_steps = sum(r[2] for r in results)
+    else:
+        print(f"Recording {len(SEEDS)} seeds (serial)...", flush=True)
+        total_steps = 0
+        for seed in SEEDS:
+            _, _, n, dt = record_seed(seed, args.output)
+            total_steps += n
 
-    for seed in SEEDS:
-        _, _, n, dt = record_seed(seed, args.output)
-        total_steps += n
-
-    total_t = time.time() - t0
-    print(f"\nDone: {total_steps} total steps in {total_t:.0f}s")
+    print(f"\nDone: {total_steps} total steps")
     print(f"Golden data saved to {args.output}/")
