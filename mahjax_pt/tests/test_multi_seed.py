@@ -112,13 +112,28 @@ def test_seed(seed):
 
         ok_steps = 0
         fail_step = fail_act = fail_fields = None
+        prev_action = -1
 
         for step in range(200):
             if bool(js.terminated) or bool(js.round_state.terminated_round):
                 break
             legal = np.where(np.array(js.legal_action_mask))[0]
-            discards = [a for a in legal if a < 37]
-            a = int(discards[step % len(discards)] if discards else legal[0])
+            # Prioritize all action types for coverage (mirrors rule_based_player):
+            #   win > kan > meld > riichi > kyushu > discard
+            a = None
+            for candidate in [
+                73, 74, 72,                          # RON, TSUMO, RIICHI (win)
+                77,                                   # OPEN_KAN
+                75, 76,                               # PON, PON_RED
+                78, 79, 80, 81, 82, 83,              # CHI_L..CHI_R_RED
+            ] + list(range(70, 36, -1)):              # selfkan (70..37)
+                if candidate in legal:
+                    a = candidate; break
+            if a is None:
+                # kyushu or discard or anything else
+                a = int(legal[0])
+            prev_action = a
+            a = int(a)
             js = jenv.step(js, a)
             ps = penv.step(ps, a)
             diffs = compare_all(js, ps)
@@ -126,6 +141,14 @@ def test_seed(seed):
                 fail_step = step
                 fail_act = a
                 fail_fields = diffs
+                # Dump detailed context for the failing step
+                sys.stderr.write(f"[FAIL] step={step} act={a} prev_act={prev_action} cp={int(js.current_player)} fields={diffs}\n")
+                sys.stderr.write(f"  legal: {list(legal)}\n")
+                for name in diffs:
+                    fn = dict(CHECKS)[name]
+                    jv_val, pv_val = jv(fn(js)), jv(fn(ps))
+                    sys.stderr.write(f"  {name}: {describe_diff(name, jv_val, pv_val)}\n")
+                sys.stderr.flush()
                 break
             ok_steps += 1
             if step % 20 == 19:
