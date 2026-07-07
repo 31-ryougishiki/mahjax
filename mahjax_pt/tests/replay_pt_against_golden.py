@@ -65,7 +65,6 @@ def _copy_golden_to_pt(golden, state):
     """Copy JAX golden init state into a PT state."""
     state.current_player = int(golden['current_player'])
     state.terminated = bool(golden['terminated'])
-    state.legal_action_mask = torch.from_numpy(golden['legal_action_mask'].copy()).bool()
     state.rewards = torch.from_numpy(golden['rewards'].copy()).float()
 
     # Player fields
