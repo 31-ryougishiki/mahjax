@@ -62,37 +62,59 @@ def pt_val(v):
 
 
 def _copy_golden_to_pt(golden, state):
-    """Copy JAX golden init state into a PT state."""
+    """Copy JAX golden init state into a PT state — explicit per-field to avoid bugs."""
+    # Top-level env fields
     state.current_player = int(golden['current_player'])
     state.terminated = bool(golden['terminated'])
-    state.rewards = torch.from_numpy(golden['rewards'].copy()).float()
+    state.truncated = bool(golden.get('truncated', False))
+    state.step_count = int(golden.get('step_count', 0))
+    state.rewards = torch.from_numpy(np.array(golden['rewards'], dtype=np.float32)).float()
 
-    # Player fields
+    # Player fields — manually copy each to ensure correctness
+    G = golden
     pp = state.players
-    for key, val in golden.items():
-        if not key.startswith('players.'):
-            continue
-        fname = key.split('.', 1)[1]
-        if hasattr(pp, fname):
-            arr = val.copy()
-            dt = getattr(pp, fname).dtype
-            setattr(pp, fname, torch.from_numpy(arr).to(dt))
+    pp.hand[:] = torch.from_numpy(G['players.hand']).to(pp.hand.dtype)
+    pp.hand_with_red[:] = torch.from_numpy(G['players.hand_with_red']).to(pp.hand_with_red.dtype)
+    pp.melds[:] = torch.from_numpy(G['players.melds']).to(pp.melds.dtype)
+    pp.meld_counts[:] = torch.from_numpy(G['players.meld_counts']).to(pp.meld_counts.dtype)
+    pp.discard_counts[:] = torch.from_numpy(G['players.discard_counts']).to(pp.discard_counts.dtype)
+    pp.river[:] = torch.from_numpy(G['players.river']).to(pp.river.dtype)
+    pp.riichi[:] = torch.from_numpy(G['players.riichi']).to(pp.riichi.dtype)
+    pp.riichi_declared[:] = torch.from_numpy(G['players.riichi_declared']).to(pp.riichi_declared.dtype)
+    pp.has_won[:] = torch.from_numpy(G['players.has_won']).to(pp.has_won.dtype)
+    pp.n_kan[:] = torch.from_numpy(G['players.n_kan']).to(pp.n_kan.dtype)
+    pp.has_yaku[:] = torch.from_numpy(G['players.has_yaku']).to(pp.has_yaku.dtype)
+    pp.is_hand_concealed[:] = torch.from_numpy(G['players.is_hand_concealed']).to(pp.is_hand_concealed.dtype)
+    pp.furiten_by_discard[:] = torch.from_numpy(G['players.furiten_by_discard']).to(pp.furiten_by_discard.dtype)
+    pp.furiten_by_pass[:] = torch.from_numpy(G['players.furiten_by_pass']).to(pp.furiten_by_pass.dtype)
+    pp.ippatsu[:] = torch.from_numpy(G['players.ippatsu']).to(pp.ippatsu.dtype)
+    pp.fan[:] = torch.from_numpy(G['players.fan']).to(pp.fan.dtype)
+    pp.fu[:] = torch.from_numpy(G['players.fu']).to(pp.fu.dtype)
+    pp.legal_action_mask[:] = torch.from_numpy(G['players.legal_action_mask']).to(pp.legal_action_mask.dtype)
 
-    # Round fields
+    # Round state fields
     pr = state.round_state
-    for key, val in golden.items():
-        if not key.startswith('round_state.'):
-            continue
-        fname = key.split('.', 1)[1]
-        if not hasattr(pr, fname):
-            continue
-        if isinstance(val, np.ndarray):
-            dt = getattr(pr, fname).dtype
-            setattr(pr, fname, torch.from_numpy(val.copy()).to(dt))
-        elif isinstance(val, (bool, np.bool_)):
-            setattr(pr, fname, bool(val))
-        else:
-            setattr(pr, fname, int(val))
+    pr.round = int(G['round_state.round'])
+    pr.honba = int(G['round_state.honba'])
+    pr.kyotaku = int(G['round_state.kyotaku'])
+    pr.dealer = int(G['round_state.dealer'])
+    pr.next_deck_ix = int(G['round_state.next_deck_ix'])
+    pr.last_deck_ix = int(G['round_state.last_deck_ix'])
+    pr.last_draw = int(G['round_state.last_draw'])
+    pr.last_player = int(G['round_state.last_player'])
+    pr.target = int(G['round_state.target'])
+    pr.n_kan_doras = int(G.get('round_state.n_kan_doras', 0))
+    pr.terminated_round = bool(G['round_state.terminated_round'])
+    pr.draw_next = bool(G['round_state.draw_next'])
+    pr.is_haitei = bool(G['round_state.is_haitei'])
+    pr.is_abortive_draw_normal = bool(G['round_state.is_abortive_draw_normal'])
+    pr.kan_declared = bool(G.get('round_state.kan_declared', False))
+    pr.can_after_kan = bool(G.get('round_state.can_after_kan', False))
+    pr.deck[:] = torch.from_numpy(G['round_state.deck']).to(pr.deck.dtype)
+    pr.score[:] = torch.from_numpy(G['round_state.score']).to(pr.score.dtype)
+    pr.dora_indicators[:] = torch.from_numpy(G['round_state.dora_indicators']).to(pr.dora_indicators.dtype)
+    pr.order_points[:] = torch.from_numpy(G['round_state.order_points']).to(pr.order_points.dtype)
+    pr.seat_wind[:] = torch.from_numpy(G['round_state.seat_wind']).to(pr.seat_wind.dtype)
 
 
 def compare_one(golden_val, pt_val, tolerance):
