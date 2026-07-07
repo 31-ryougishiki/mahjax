@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
-"""Multi-seed JAX vs PT alignment test with detailed failure logging."""
+"""Multi-seed JAX vs PT alignment test with multiprocessing support.
+
+Usage:
+  python test_multi_seed.py              # all 10 seeds, serial
+  python test_multi_seed.py -j 4         # all 10 seeds, 4 workers
+  python test_multi_seed.py 13           # seed 13 only
+  python test_multi_seed.py 13 42 99     # specific seeds
+"""
 import jax; jax.config.update('jax_disable_jit', True)
 import numpy as np, torch, sys, time
+from multiprocessing import Pool, cpu_count
 from mahjax.red_mahjong.cpu_env import RedMahjong as JaxEnv
 from mahjax_pt.red_mahjong.env_serial import RedMahjongSerial as PtEnv
 
@@ -34,7 +42,6 @@ def copy_to_pt(js, ps):
 
 
 def jv(val):
-    """Convert to numpy for comparison."""
     if isinstance(val, torch.Tensor):
         return val.detach().cpu().numpy()
     if hasattr(val, '__array__'):
@@ -42,7 +49,6 @@ def jv(val):
     return np.asarray(val)
 
 
-# All fields to compare, with readable names
 CHECKS = [
     ('hand',              lambda s: s.players.hand),
     ('deck',              lambda s: s.round_state.deck),
@@ -70,7 +76,6 @@ CHECKS = [
 
 
 def compare_all(js, ps):
-    """Return list of field names that differ."""
     diffs = []
     for name, fn in CHECKS:
         jv_val = jv(fn(js))
@@ -81,7 +86,6 @@ def compare_all(js, ps):
 
 
 def describe_diff(name, jv_val, pv_val):
-    """Debug description of a single field difference."""
     jv_val = np.asarray(jv_val)
     pv_val = np.asarray(pv_val)
     if jv_val.size < 20:
@@ -91,26 +95,18 @@ def describe_diff(name, jv_val, pv_val):
         return f"{n} elems differ, JAX range [{jv_val.min()},{jv_val.max()}] PT range [{pv_val.min()},{pv_val.max()}]"
 
 
-if len(sys.argv) > 1:
-    SEEDS = [int(s) for s in sys.argv[1:]]
-else:
-    SEEDS = [1, 7, 13, 42, 99, 123, 256, 512, 1024, 2048]
-print(f"Testing {len(SEEDS)} seeds: {SEEDS}", flush=True)
-
-results = []
-for seed in SEEDS:
-    sys.stdout.write(f"seed={seed:4d}: ")
-    sys.stdout.flush()
+def test_seed(seed):
+    """Run a single seed test. Returns (seed, ok, details_dict)."""
     t0 = time.time()
-
     jenv = JaxEnv(round_mode='single')
     penv = PtEnv(round_mode='single')
     js = jenv.init(jax.random.PRNGKey(seed))
     ps = penv.init(key=0)
     ps = copy_to_pt(js, ps)
 
-    ok = 0
+    ok_steps = 0
     fail_step = fail_act = fail_fields = None
+
     for step in range(200):
         if bool(js.terminated) or bool(js.round_state.terminated_round):
             break
@@ -125,9 +121,8 @@ for seed in SEEDS:
             fail_act = a
             fail_fields = diffs
             break
-        ok += 1
+        ok_steps += 1
 
-    # Also check final state
     if fail_step is None:
         diffs = compare_all(js, ps)
         if diffs:
@@ -137,23 +132,61 @@ for seed in SEEDS:
 
     dt = time.time() - t0
     if fail_step is None:
-        print(f"OK ({ok} steps, {dt:.0f}s)", flush=True)
-        results.append((seed, True, None))
+        return (seed, True, {'steps': ok_steps, 'time': dt, 'error': None})
     else:
-        print(f"FAIL step={fail_step} act={fail_act} fields={fail_fields} ({dt:.0f}s)", flush=True)
-        # Detailed dump for each failing field
+        details = {
+            'steps': ok_steps,
+            'time': dt,
+            'fail_step': fail_step,
+            'fail_act': fail_act,
+            'fail_fields': fail_fields,
+        }
+        # Get diff details from final state
         for name in fail_fields:
             fn = dict(CHECKS)[name]
-            jv, pv = jv(fn(js)), jv(fn(ps))
-            print(f"  {name}: {describe_diff(name, jv, pv)}", flush=True)
-        results.append((seed, False, fail_fields))
+            jv_val, pv_val = jv(fn(js)), jv(fn(ps))
+            details[f'diff_{name}'] = describe_diff(name, jv_val, pv_val)
+        return (seed, False, details)
 
-n_pass = sum(1 for _, ok, _ in results if ok)
-print(f"\nPassed: {n_pass}/{len(SEEDS)} seeds", flush=True)
-if n_pass == len(SEEDS):
-    print("ALL SEEDS PASS!", flush=True)
-else:
-    for seed, ok, fields in results:
-        if not ok:
-            print(f"  seed={seed} FAILED: {fields}", flush=True)
-    sys.exit(1)
+
+if __name__ == '__main__':
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument('seeds', nargs='*', type=int, help='Seeds to test (default: all 10)')
+    p.add_argument('-j', '--jobs', type=int, default=1, help='Number of parallel workers')
+    args = p.parse_args()
+
+    if args.seeds:
+        SEEDS = args.seeds
+    else:
+        SEEDS = [1, 7, 13, 42, 99, 123, 256, 512, 1024, 2048]
+
+    if args.jobs > 1:
+        print(f"Running {len(SEEDS)} seeds with {args.jobs} workers...", flush=True)
+        with Pool(min(args.jobs, len(SEEDS))) as pool:
+            results = pool.map(test_seed, SEEDS)
+    else:
+        print(f"Testing {len(SEEDS)} seeds (serial): {SEEDS}", flush=True)
+        results = [test_seed(s) for s in SEEDS]
+
+    # Print results in seed order
+    n_pass = 0
+    for seed, ok, d in results:
+        if ok:
+            print(f"seed={seed:4d}: OK ({d['steps']} steps, {d['time']:.0f}s)", flush=True)
+            n_pass += 1
+        else:
+            print(f"seed={seed:4d}: FAIL step={d['fail_step']} act={d['fail_act']} fields={d['fail_fields']} ({d['time']:.0f}s)", flush=True)
+            for name in d['fail_fields']:
+                key = f'diff_{name}'
+                if key in d:
+                    print(f"  {name}: {d[key]}", flush=True)
+
+    print(f"\nPassed: {n_pass}/{len(SEEDS)} seeds", flush=True)
+    if n_pass == len(SEEDS):
+        print("ALL SEEDS PASS!", flush=True)
+    else:
+        for seed, ok, d in results:
+            if not ok:
+                print(f"  seed={seed} FAILED: {d['fail_fields']}", flush=True)
+        sys.exit(1)
