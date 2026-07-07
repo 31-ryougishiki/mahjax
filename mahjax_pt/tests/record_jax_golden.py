@@ -72,25 +72,37 @@ def select_action(state):
 
 def record_seed(seed, output_dir):
     """Record a single seed, return (seed, path, n_steps, elapsed)."""
-    t0 = time.time()
-    jenv = JaxEnv(round_mode='single')
-    state = jenv.init(jax.random.PRNGKey(seed))
+    import os as _os
+    try:
+        t0 = time.time()
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} starting...\n"); sys.stderr.flush()
+        jenv = JaxEnv(round_mode='single')
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} init...\n"); sys.stderr.flush()
+        state = jenv.init(jax.random.PRNGKey(seed))
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} running steps...\n"); sys.stderr.flush()
 
-    records = []
-    for step in range(200):
-        if bool(state.terminated) or bool(state.round_state.terminated_round):
-            break
-        action = select_action(state)
-        state = jenv.step(state, action)
-        records.append({'action': action, 'state': jax_to_dict(state)})
+        records = []
+        for step in range(200):
+            if bool(state.terminated) or bool(state.round_state.terminated_round):
+                break
+            action = select_action(state)
+            state = jenv.step(state, action)
+            records.append({'action': action, 'state': jax_to_dict(state)})
+            if step % 20 == 19:
+                sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} step={step+1}\n"); sys.stderr.flush()
 
-    path = os.path.join(output_dir, f'golden_seed_{seed:04d}.pkl')
-    with open(path, 'wb') as f:
-        pickle.dump({'seed': seed, 'records': records}, f)
+        path = os.path.join(output_dir, f'golden_seed_{seed:04d}.pkl')
+        with open(path, 'wb') as f:
+            pickle.dump({'seed': seed, 'records': records}, f)
 
-    dt = time.time() - t0
-    print(f"  seed={seed:4d}: {len(records)} steps saved → {path} ({dt:.0f}s)", flush=True)
-    return seed, path, len(records), dt
+        dt = time.time() - t0
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} done: {len(records)} steps ({dt:.0f}s)\n"); sys.stderr.flush()
+        print(f"  seed={seed:4d}: {len(records)} steps saved → {path} ({dt:.0f}s)", flush=True)
+        return seed, path, len(records), dt
+    except Exception as e:
+        import traceback
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} CRASH: {e}\n{traceback.format_exc()}\n"); sys.stderr.flush()
+        raise
 
 
 if __name__ == '__main__':
