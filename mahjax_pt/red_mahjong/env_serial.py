@@ -956,6 +956,8 @@ class RedMahjongSerial(Env):
 
         state = self._flip_dora(state)
         state = self._draw_after_kan(state)
+        if state.round_state.last_player != cp:  # DEBUG
+            import sys; sys.stderr.write(f'[SELFKAN] cp={cp} last_player changed from {cp} to {state.round_state.last_player}\n'); sys.stderr.flush()
         return state
 
     def _chi(self, state, action):

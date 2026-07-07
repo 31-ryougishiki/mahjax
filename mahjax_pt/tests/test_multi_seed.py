@@ -20,23 +20,35 @@ def copy_to_pt(js, ps):
     ps.legal_action_mask = torch.from_numpy(np.array(js.legal_action_mask).copy()).bool()
     ps.rewards = torch.from_numpy(np.array(js.rewards, dtype=np.float32).copy()).float()
     jp, pp = js.players, ps.players
-    for f, dt in [('hand', torch.int8), ('hand_with_red', torch.int8), ('melds', torch.int32),
-                  ('meld_counts', torch.int8),
+    for f, dt in [('hand', torch.int8), ('hand_with_red', torch.int8),
+                  ('hand_ids', torch.int16), ('hand_counts', torch.int8),
+                  ('drawn_tile', torch.int16),
+                  ('melds', torch.int32), ('meld_counts', torch.int8),
+                  ('meld_tiles', torch.int16), ('meld_info', torch.int8),
                   ('riichi', torch.bool), ('riichi_declared', torch.bool),
+                  ('riichi_step', torch.int8), ('double_riichi', torch.bool),
+                  ('ippatsu', torch.bool),
                   ('furiten_by_discard', torch.bool), ('furiten_by_pass', torch.bool),
                   ('is_hand_concealed', torch.bool), ('has_won', torch.bool),
                   ('n_kan', torch.int8), ('discard_counts', torch.int8),
-                  ('river', torch.int32), ('has_yaku', torch.bool), ('ippatsu', torch.bool)]:
+                  ('discards', torch.int16), ('discard_info', torch.int8),
+                  ('river', torch.int32),
+                  ('has_yaku', torch.bool), ('fan', torch.int32), ('fu', torch.int32),
+                  ('can_win', torch.bool), ('pon', torch.int32),
+                  ('has_nagashi_mangan', torch.bool)]:
         setattr(pp, f, torch.from_numpy(np.array(getattr(jp, f)).copy()).to(dt))
     jr, pr = js.round_state, ps.round_state
     for f in ['round', 'honba', 'kyotaku', 'dealer', 'next_deck_ix', 'last_deck_ix',
-              'last_draw', 'last_player', 'target', 'n_kan_doras']:
+              'last_draw', 'last_player', 'target', 'n_kan_doras',
+              'shanten_current_player', 'dummy_count', 'round_limit']:
         setattr(pr, f, int(getattr(jr, f)))
     for f in ['terminated_round', 'draw_next', 'is_haitei', 'kan_declared', 'can_after_kan',
-              'is_abortive_draw_normal']:
+              'can_robbing_kan', 'is_abortive_draw_normal']:
         setattr(pr, f, bool(getattr(jr, f)))
     for f, dt in [('deck', torch.int8), ('score', torch.int32), ('dora_indicators', torch.int8),
-                  ('seat_wind', torch.int8), ('order_points', torch.int32)]:
+                  ('ura_dora_indicators', torch.int8),
+                  ('seat_wind', torch.int8), ('init_wind', torch.int8),
+                  ('order_points', torch.int32), ('action_history', torch.int8)]:
         setattr(pr, f, torch.from_numpy(np.array(getattr(jr, f)).copy()).to(dt))
     return ps
 
