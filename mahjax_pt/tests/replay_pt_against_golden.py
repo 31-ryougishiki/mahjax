@@ -68,7 +68,7 @@ def _copy_golden_to_pt(golden, state):
     state.terminated = bool(golden['terminated'])
     # Env-level mask must match the current player's per-player mask from JAX
     cp = state.current_player
-    state.legal_action_mask = torch.from_numpy(G['players.legal_action_mask'][cp].copy()).bool()
+    state.legal_action_mask = torch.from_numpy(golden['players.legal_action_mask'][cp].copy()).bool()
     state.truncated = bool(golden.get('truncated', False))
     state.step_count = int(golden.get('step_count', 0))
     state.rewards = torch.from_numpy(np.array(golden['rewards'], dtype=np.float32)).float()
