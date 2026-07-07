@@ -931,22 +931,38 @@ class RedMahjongSerial(Env):
         """Handle a closed or added kan.
 
         Melds from own hand — no discarder's river to mark.
+
+        JAX: added_kan REPLACES the existing PON meld (meld_counts unchanged).
+             closed_kan APPENDS a new meld (meld_counts incremented).
         """
         cp = state.current_player
         hand = state.players.hand_with_red[cp]
         tile_type = action - 37
-        n = int(state.players.meld_counts[cp].item())
 
         if is_added:
+            # Find the existing PON meld slot and replace it (JAX _added_kan)
+            pon_idx = -1
+            for m_idx in range(int(state.players.meld_counts[cp].item())):
+                m = int(state.players.melds[cp, m_idx].item())
+                if m != EMPTY_MELD and Meld.is_pon(m) and Meld.target(m) == tile_type:
+                    pon_idx = m_idx
+                    break
             meld = Meld.init(action, tile_type, 1)
             state.players.hand_with_red[cp] = Hand.added_kan(hand, tile_type)
+            if pon_idx >= 0:
+                state.players.melds[cp, pon_idx] = meld  # replace, don't increment count
+            else:
+                # Fallback: should not happen, but handle gracefully
+                n = int(state.players.meld_counts[cp].item())
+                state.players.melds[cp, n] = meld
+                state.players.meld_counts[cp] += 1
         else:
             meld = Meld.init(action, tile_type, 0)
             state.players.hand_with_red[cp] = Hand.closed_kan(hand, tile_type)
-
-        # Record meld (no river marker needed — own tiles)
-        state.players.melds[cp, n] = meld
-        state.players.meld_counts[cp] += 1
+            # Closed kan: append new meld
+            n = int(state.players.meld_counts[cp].item())
+            state.players.melds[cp, n] = meld
+            state.players.meld_counts[cp] += 1
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.n_kan[cp] += 1
 
