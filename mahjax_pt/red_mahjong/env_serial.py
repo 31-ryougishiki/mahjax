@@ -344,7 +344,6 @@ class RedMahjongSerial(Env):
         elif Action.is_selfkan(action):
             if profile: _t0 = _time.time()
             tile_type = action - 37
-            # JAX: is_added_kan = pon != 0 (checks meld list for existing PON)
             cp = state.current_player
             is_added = False
             for m_idx in range(int(state.players.meld_counts[cp].item())):
@@ -352,7 +351,12 @@ class RedMahjongSerial(Env):
                 if m != EMPTY_MELD and Meld.is_pon(m) and Meld.target(m) == tile_type:
                     is_added = True
                     break
+            import sys
+            sys.stderr.write(f'[SELFKAN] cp={cp} action={action} tile_type={tile_type} is_added={is_added} n_kan_sum={int(state.players.n_kan.sum().item())} meld_counts_cp={int(state.players.meld_counts[cp].item())}\n')
+            sys.stderr.flush()
             state = self._selfkan(state, action, is_added)
+            sys.stderr.write(f'[SELFKAN after] hand_cp_sum={int(state.players.hand_with_red[cp].sum().item())} n_kan_sum={int(state.players.n_kan.sum().item())} last_draw={int(state.round_state.last_draw)} last_player={int(state.round_state.last_player)}\n')
+            sys.stderr.flush()
             if profile: _t['selfkan'] = _time.time() - _t0
         elif action == Action.TSUMOGIRI:
             if profile: _t0 = _time.time()
@@ -966,14 +970,11 @@ class RedMahjongSerial(Env):
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
         state.players.n_kan[cp] += 1
 
-        # Self kan: the kan caller IS the last player (JAX _kan sets last_player=c_p)
-        state.round_state.last_player = cp
+        # JAX _kan does NOT set last_player — it stays at the previous value (discarder)
         state.round_state.target = -1  # JAX _draw_after_kan non-robbing branch L1404
 
         state = self._flip_dora(state)
         state = self._draw_after_kan(state)
-        if state.round_state.last_player != cp:  # DEBUG
-            import sys; sys.stderr.write(f'[SELFKAN] cp={cp} last_player changed from {cp} to {state.round_state.last_player}\n'); sys.stderr.flush()
         return state
 
     def _chi(self, state, action):
