@@ -145,6 +145,12 @@ def replay_seed(seed, init_state, records, verbose=False):
 
         state = penv.step(state, action)
 
+        if step == 0:
+            sys.stderr.write(f"[DEBUG step0] state.cp={state.current_player} type={type(state.current_player).__name__}\n")
+            sys.stderr.write(f"[DEBUG step0] pp.hand shape={state.players.hand.shape} sum={state.players.hand.sum().item()}\n")
+            sys.stderr.write(f"[DEBUG step0] golden cp={golden.get('current_player','?')} type={type(golden.get('current_player','?')).__name__}\n")
+            sys.stderr.flush()
+
         diffs = []
         for name, accessor, tol in CHECKS:
             if name not in golden:
