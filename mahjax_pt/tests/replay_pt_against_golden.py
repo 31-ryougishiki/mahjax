@@ -136,7 +136,11 @@ def replay_seed(seed, init_state, records, verbose=False):
                     gv = golden[name]
                     pv = pt_val(accessor(state, name))
                     gv_np = np.asarray(gv); pv_np = np.asarray(pv)
-                    if gv_np.size > 20:
+                    if gv_np.shape != pv_np.shape:
+                        sys.stderr.write(f"  {name}: SHAPE MISMATCH G={gv_np.shape} P={pv_np.shape}\n")
+                        sys.stderr.write(f"    G values (first 20): {gv_np.flatten()[:20].tolist()}\n")
+                        sys.stderr.write(f"    P values (first 20): {pv_np.flatten()[:20].tolist()}\n")
+                    elif gv_np.size > 20:
                         n_diff = int(np.sum(gv_np != pv_np))
                         idx = np.where(gv_np != pv_np)
                         first_idx = list(zip(idx[0][:5].tolist(), idx[1][:5].tolist())) if gv_np.ndim > 1 else idx[0][:10].tolist()
