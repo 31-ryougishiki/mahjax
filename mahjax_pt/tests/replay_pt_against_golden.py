@@ -132,10 +132,22 @@ def replay_seed(seed, init_state, records, verbose=False):
         if diffs:
             first_fail = (step, action, diffs)
             if verbose:
-                for name in diffs[:5]:
+                for name in diffs[:8]:
                     gv = golden[name]
                     pv = pt_val(accessor(state, name))
-                    sys.stderr.write(f"  {name}: G={np.asarray(gv).tolist() if np.asarray(gv).size<10 else '...'} P={np.asarray(pv).tolist() if np.asarray(pv).size<10 else '...'}\n")
+                    gv_np = np.asarray(gv); pv_np = np.asarray(pv)
+                    if gv_np.size > 20:
+                        n_diff = int(np.sum(gv_np != pv_np))
+                        idx = np.where(gv_np != pv_np)
+                        first_idx = list(zip(idx[0][:5].tolist(), idx[1][:5].tolist())) if gv_np.ndim > 1 else idx[0][:10].tolist()
+                        sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {first_idx}\n")
+                        if n_diff < 20:
+                            for i in first_idx if gv_np.ndim==1 else range(min(5, n_diff)):
+                                if gv_np.ndim == 1:
+                                    j = idx[0][i]
+                                    sys.stderr.write(f"    [{j}] G={gv_np[j]} P={pv_np[j]}\n")
+                    else:
+                        sys.stderr.write(f"  {name}: G={gv_np.tolist()} P={pv_np.tolist()}\n")
             break
         ok_steps += 1
 
