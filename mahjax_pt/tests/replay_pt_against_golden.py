@@ -2,12 +2,14 @@
 """Replay PT against recorded JAX golden data. No JAX needed at runtime.
 
 Usage:
-  python replay_pt_against_golden.py                    # all seeds in golden_data/
+  python replay_pt_against_golden.py                    # all seeds (serial)
+  python replay_pt_against_golden.py -j 4               # all seeds, 4 workers
   python replay_pt_against_golden.py -d ./golden_data   # custom dir
   python replay_pt_against_golden.py -s 13 42           # specific seeds
   python replay_pt_against_golden.py --list             # list available seeds
+  python replay_pt_against_golden.py -s 13 42 -v        # verbose diff output
 """
-import os, sys, time, pickle
+import os, sys, time, pickle, traceback
 import numpy as np, torch
 from mahjax_pt.red_mahjong.env_serial import RedMahjongSerial as PtEnv
 
@@ -125,12 +127,43 @@ def compare_one(golden_val, pt_val, tolerance):
         return np.allclose(np.asarray(golden_val), np.asarray(pt_val), rtol=1e-3, atol=1e-5)
 
 
+def _format_diffs(state, golden, diff_names):
+    """Format human-readable diff strings for verbose output."""
+    lines = []
+    amap = dict((n, a) for n, a, t in CHECKS)
+    for name in diff_names[:8]:
+        gv = golden[name]
+        pv = pt_val(amap[name](state, name))
+        gv_np = np.asarray(gv); pv_np = np.asarray(pv)
+        if gv_np.shape != pv_np.shape:
+            lines.append(f"  {name}: SHAPE MISMATCH G={gv_np.shape} P={pv_np.shape}")
+        elif gv_np.size > 20:
+            n_diff = int(np.sum(gv_np != pv_np))
+            idx = np.where(gv_np != pv_np)
+            if 'mask' in name.lower() and n_diff < 30:
+                lines.append(f"  {name}: {n_diff}/{gv_np.size} diffs")
+                for i in range(min(n_diff, 15)):
+                    if gv_np.ndim == 1:
+                        ai = int(idx[0][i])
+                        lines.append(f"    act{ai}: G={gv_np[ai]} P={pv_np[ai]}")
+                    else:
+                        pi, ai = int(idx[0][i]), int(idx[1][i])
+                        lines.append(f"    P{pi} act{ai}: G={gv_np[pi,ai]} P={pv_np[pi,ai]}")
+            else:
+                if gv_np.ndim >= 2:
+                    lines.append(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {list(zip(idx[0][:5], idx[1][:5]))}")
+                else:
+                    lines.append(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {idx[0][:10].tolist()}")
+        else:
+            lines.append(f"  {name}: G={gv_np.tolist()} P={pv_np.tolist()}")
+    return lines
+
+
 def replay_seed(seed, init_state, records, verbose=False):
     """Replay one seed's records against PT. Returns (seed, ok, details)."""
     t0 = time.time()
     penv = PtEnv(round_mode='single')
     state = penv.init(key=0)
-    # Copy JAX init state into PT so we start from the same point
     _copy_golden_to_pt(init_state, state)
 
     ok_steps = 0
@@ -154,34 +187,8 @@ def replay_seed(seed, init_state, records, verbose=False):
         if diffs:
             first_fail = (step, action, diffs)
             if verbose:
-                # Build accessor map to avoid loop variable capture bug
-                amap = dict((n, a) for n, a, t in CHECKS)
-                for name in diffs[:8]:
-                    gv = golden[name]
-                    pv = pt_val(amap[name](state, name))
-                    gv_np = np.asarray(gv); pv_np = np.asarray(pv)
-                    if gv_np.shape != pv_np.shape:
-                        sys.stderr.write(f"  {name}: SHAPE MISMATCH G={gv_np.shape} P={pv_np.shape}\n")
-                    elif gv_np.size > 20:
-                        n_diff = int(np.sum(gv_np != pv_np))
-                        idx = np.where(gv_np != pv_np)
-                        # For mask: print actual True/False values at diff positions
-                        if 'mask' in name.lower() and n_diff < 30:
-                            sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs\n")
-                            for i in range(min(n_diff, 15)):
-                                if gv_np.ndim == 1:
-                                    ai = int(idx[0][i])
-                                    sys.stderr.write(f"    act{ai}: G={gv_np[ai]} P={pv_np[ai]}\n")
-                                else:
-                                    pi, ai = int(idx[0][i]), int(idx[1][i])
-                                    sys.stderr.write(f"    P{pi} act{ai}: G={gv_np[pi,ai]} P={pv_np[pi,ai]}\n")
-                        else:
-                            if gv_np.ndim >= 2:
-                                sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {list(zip(idx[0][:5], idx[1][:5]))}\n")
-                            else:
-                                sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {idx[0][:10].tolist()}\n")
-                    else:
-                        sys.stderr.write(f"  {name}: G={gv_np.tolist()} P={pv_np.tolist()}\n")
+                for line in _format_diffs(state, golden, diffs):
+                    sys.stderr.write(line + '\n')
             break
         ok_steps += 1
 
@@ -193,11 +200,36 @@ def replay_seed(seed, init_state, records, verbose=False):
         return (seed, False, {'steps': ok_steps, 'time': dt, 'fail_step': s, 'fail_act': a, 'fail_fields': f})
 
 
+# ── Worker (module-level for multiprocessing) ──
+
+def _worker_replay(args):
+    """Replay a single golden file. Returns (seed, ok, details, verbose_lines)."""
+    filepath, verbose = args
+    t0 = time.time()
+    try:
+        with open(filepath, 'rb') as f:
+            data = pickle.load(f)
+        seed = data['seed']
+        records = data['records']
+        seed, ok, d = replay_seed(seed, data['init_state'], records, verbose=verbose)
+        d['time'] = time.time() - t0
+        return (seed, ok, d, [])
+    except Exception:
+        dt = time.time() - t0
+        return (None, False,
+                {'steps': 0, 'time': dt, 'fail_step': 0, 'fail_act': -1,
+                 'fail_fields': [f'CRASH: {traceback.format_exc()}']}, [])
+
+
+# ── Main ──
+
 if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument('-d', '--data-dir', default='golden_data', help='Golden data directory')
     p.add_argument('-s', '--seeds', nargs='*', type=int, help='Specific seeds')
+    p.add_argument('-j', '--jobs', type=int, default=1, help='Parallel workers (default: 1 = serial)')
+    p.add_argument('-v', '--verbose', action='store_true', help='Always print diff details')
     p.add_argument('--list', action='store_true', help='List available seeds')
     args = p.parse_args()
 
@@ -217,25 +249,36 @@ if __name__ == '__main__':
         print(f"No golden data found in {args.data_dir}/. Run record_jax_golden.py first.")
         sys.exit(1)
 
-    results = []
+    n_seeds = len(files)
+    verbose = args.verbose or (n_seeds <= 3 and args.jobs <= 1)
+
+    # Build work items
+    work = [(os.path.join(args.data_dir, f), verbose) for f in files]
+
+    # ── Execute ──
+    n_workers = min(args.jobs, n_seeds) if args.jobs > 1 else 1
+
+    if n_workers > 1:
+        from multiprocessing import get_context
+        print(f"Replaying {n_seeds} seeds with {n_workers} workers...", flush=True)
+        with get_context('spawn').Pool(n_workers) as pool:
+            results = pool.map(_worker_replay, work)
+    else:
+        if n_seeds > 1:
+            print(f"Replaying {n_seeds} seeds (serial)...", flush=True)
+        results = [_worker_replay(w) for w in work]
+
+    # ── Report ──
     n_pass = 0
-    for fname in files:
-        path = os.path.join(args.data_dir, fname)
-        with open(path, 'rb') as f:
-            data = pickle.load(f)
-        seed = data['seed']
-        records = data['records']
-        verbose = len(args.seeds or []) <= 3  # detail for small runs
-        seed, ok, d = replay_seed(seed, data['init_state'], records, verbose=verbose)
+    for seed, ok, d, _vl in results:
         if ok:
             print(f"seed={seed:4d}: OK ({d['steps']} steps, {d['time']:.1f}s)", flush=True)
             n_pass += 1
         else:
             print(f"seed={seed:4d}: FAIL step={d['fail_step']} act={d['fail_act']} fields={d['fail_fields']} ({d['time']:.1f}s)", flush=True)
-        results.append((seed, ok, d))
 
-    print(f"\nPassed: {n_pass}/{len(files)} seeds", flush=True)
-    if n_pass == len(files):
+    print(f"\nPassed: {n_pass}/{n_seeds} seeds", flush=True)
+    if n_pass == n_seeds:
         print("ALL SEEDS PASS!", flush=True)
     else:
         for seed, ok, d in results:
