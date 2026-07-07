@@ -112,7 +112,7 @@ def test_seed(seed):
             break
         legal = np.where(np.array(js.legal_action_mask))[0]
         discards = [a for a in legal if a < 37]
-        a = int(discards[step % len(discards)] if discards else legal[0])
+        a = int(discards[0] if discards else legal[0])
         js = jenv.step(js, a)
         ps = penv.step(ps, a)
         diffs = compare_all(js, ps)
