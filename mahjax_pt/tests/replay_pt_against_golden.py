@@ -169,19 +169,14 @@ def replay_seed(seed, init_state, records, verbose=False):
                         if 'mask' in name.lower() and n_diff < 30:
                             sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs\n")
                             for i in range(min(n_diff, 15)):
-                                pi, ai = idx[0][i], idx[1][i]
-                                sys.stderr.write(f"    P{pi} act{ai}: G={gv_np[pi,ai]} P={pv_np[pi,ai]}\n")
+                                if gv_np.ndim == 1:
+                                    ai = int(idx[0][i])
+                                    sys.stderr.write(f"    act{ai}: G={gv_np[ai]} P={pv_np[ai]}\n")
+                                else:
+                                    pi, ai = int(idx[0][i]), int(idx[1][i])
+                                    sys.stderr.write(f"    P{pi} act{ai}: G={gv_np[pi,ai]} P={pv_np[pi,ai]}\n")
                         else:
                             sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {list(zip(idx[0][:5], idx[1][:5]))}\n")
-                        n_diff = int(np.sum(gv_np != pv_np))
-                        idx = np.where(gv_np != pv_np)
-                        first_idx = list(zip(idx[0][:5].tolist(), idx[1][:5].tolist())) if gv_np.ndim > 1 else idx[0][:10].tolist()
-                        sys.stderr.write(f"  {name}: {n_diff}/{gv_np.size} diffs, first at {first_idx}\n")
-                        if n_diff < 20:
-                            for i in first_idx if gv_np.ndim==1 else range(min(5, n_diff)):
-                                if gv_np.ndim == 1:
-                                    j = idx[0][i]
-                                    sys.stderr.write(f"    [{j}] G={gv_np[j]} P={pv_np[j]}\n")
                     else:
                         sys.stderr.write(f"  {name}: G={gv_np.tolist()} P={pv_np.tolist()}\n")
             break
