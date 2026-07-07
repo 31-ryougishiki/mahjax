@@ -1220,28 +1220,26 @@ class RedMahjongSerial(Env):
             hand_p = state.players.hand_with_red[p]
 
             # RON on the discarded tile — col 0
-            # JAX: passes 13-tile hand + state.target = discarded tile
-            # Yaku.judge reads last_tile from state.target internally
+            # JAX: has_yaku = yaku42.any(axis=-1), checks yaku TYPES not fan (fan includes dora)
             state.round_state.target = disc_tile
             try:
-                _, fan_ron, fu_ron = Yaku.judge(hand_p, True, p, state)
+                yaku_vec_r, fan_ron, fu_ron = Yaku.judge(hand_p, True, p, state)
                 fan_r = int(fan_ron.item()) if isinstance(fan_ron, torch.Tensor) else int(fan_ron)
                 fu_r = int(fu_ron.item()) if isinstance(fu_ron, torch.Tensor) else int(fu_ron)
-                state.players.has_yaku[p, 0] = (fan_r > 0)
+                state.players.has_yaku[p, 0] = bool(yaku_vec_r.any().item())
                 state.players.fan[p, 0] = fan_r
                 state.players.fu[p, 0] = fu_r
             except (IndexError, Exception):
                 pass
 
             # TSUMO on the next draw tile — col 1
-            # JAX: passes 13-tile hand + state.last_draw = next deck tile
-            state.round_state.target = orig_target  # restore; TSUMO doesn't use target
+            state.round_state.target = orig_target
             state.round_state.last_draw = next_tile
             try:
-                _, fan_tsumo, fu_tsumo = Yaku.judge(hand_p, False, p, state)
+                yaku_vec_t, fan_tsumo, fu_tsumo = Yaku.judge(hand_p, False, p, state)
                 fan_t = int(fan_tsumo.item()) if isinstance(fan_tsumo, torch.Tensor) else int(fan_tsumo)
                 fu_t = int(fu_tsumo.item()) if isinstance(fu_tsumo, torch.Tensor) else int(fu_tsumo)
-                state.players.has_yaku[p, 1] = (fan_t > 0)
+                state.players.has_yaku[p, 1] = bool(yaku_vec_t.any().item())
                 state.players.fan[p, 1] = fan_t
                 state.players.fu[p, 1] = fu_t
             except (IndexError, Exception):

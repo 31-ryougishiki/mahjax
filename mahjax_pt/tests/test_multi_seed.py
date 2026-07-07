@@ -13,6 +13,7 @@ def copy_to_pt(js, ps):
     ps.rewards = torch.from_numpy(np.array(js.rewards, dtype=np.float32).copy()).float()
     jp, pp = js.players, ps.players
     for f, dt in [('hand', torch.int8), ('hand_with_red', torch.int8), ('melds', torch.int32),
+                  ('meld_counts', torch.int8),
                   ('riichi', torch.bool), ('riichi_declared', torch.bool),
                   ('furiten_by_discard', torch.bool), ('furiten_by_pass', torch.bool),
                   ('is_hand_concealed', torch.bool), ('has_won', torch.bool),
@@ -98,7 +99,7 @@ print(f"Testing {len(SEEDS)} seeds: {SEEDS}", flush=True)
 
 results = []
 for seed in SEEDS:
-    sys.stdout.write(f"seed={seed:4d}: ", end='')
+    sys.stdout.write(f"seed={seed:4d}: ")
     sys.stdout.flush()
     t0 = time.time()
 
