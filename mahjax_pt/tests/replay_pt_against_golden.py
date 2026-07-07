@@ -156,7 +156,12 @@ def replay_seed(seed, init_state, records, verbose=False):
             if name not in golden:
                 continue
             gv = golden[name]
-            pv = pt_val(accessor(state, name))
+            pv_raw = accessor(state, name)
+            pv = pt_val(pv_raw)
+            if name == 'current_player' and step < 3:
+                sys.stderr.write(f"[CMP] {name}: raw={pv_raw} type={type(pv_raw).__name__} pv={pv} pv.shape={np.asarray(pv).shape}\n")
+                sys.stderr.write(f"[CMP] state.cp={state.current_player} state.rewards={state.rewards}\n")
+                sys.stderr.flush()
             if not compare_one(gv, pv, tol):
                 diffs.append(name)
 
