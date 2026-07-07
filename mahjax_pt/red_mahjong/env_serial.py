@@ -968,7 +968,9 @@ class RedMahjongSerial(Env):
             state.players.melds[cp, n] = meld
             state.players.meld_counts[cp] += 1
         state.players.hand[cp] = Hand.to_34(state.players.hand_with_red[cp])
-        state.players.n_kan[cp] += 1
+        # Note: n_kan is NOT incremented here — JAX _draw_after_kan increments it
+        # AFTER reading the rinshan tile from deck[10 + n_kan]. Incrementing here
+        # would shift the rinshan index by 1, causing a different tile to be drawn.
 
         # JAX _kan does NOT set last_player — it stays at the previous value (discarder)
         state.round_state.target = -1  # JAX _draw_after_kan non-robbing branch L1404
@@ -1068,11 +1070,8 @@ class RedMahjongSerial(Env):
         n_kan = int(state.players.n_kan.sum().item())
         ix = 10 + n_kan
         tile = int(state.round_state.deck[ix].item())
+        state.players.n_kan[cp] += 1  # JAX _draw_after_kan increments n_kan AFTER reading rinshan
         state.round_state.last_draw = tile
-        # Do NOT set last_player here — JAX _draw_after_kan does not.
-        # last_player is set by the kan handler:
-        #   open_kan: discarder (already set by discard flow)
-        #   selfkan:  kan caller (set in _selfkan)
         state.round_state.kan_declared = True
         state.round_state.can_after_kan = True
         state.round_state.can_robbing_kan = True
