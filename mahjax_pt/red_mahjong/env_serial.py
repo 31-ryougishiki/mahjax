@@ -1205,11 +1205,9 @@ class RedMahjongSerial(Env):
         before calling Yaku.judge. We simulate this by temporarily mutating the state.
         """
         nxt = int(state.round_state.next_deck_ix)
-        lst = int(state.round_state.last_deck_ix)
-        if nxt < lst:
-            return
-
-        next_tile = int(state.round_state.deck[nxt])
+        # JAX always computes yaku regardless of wall state.
+        # When wall is exhausted, deck[nxt] is still valid.
+        next_tile = int(state.round_state.deck[nxt]) if nxt >= 0 else 0
         disc_tile = int(discarded_tile) if isinstance(discarded_tile, (torch.Tensor, np.generic)) else discarded_tile
 
         # Save original state fields that we'll temporarily mutate
