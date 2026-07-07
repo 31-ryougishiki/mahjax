@@ -9,7 +9,7 @@ Usage:
 """
 import jax; jax.config.update('jax_disable_jit', True)
 import numpy as np, torch, sys, time
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count
 from mahjax.red_mahjong.cpu_env import RedMahjong as JaxEnv
 from mahjax_pt.red_mahjong.env_serial import RedMahjongSerial as PtEnv
 
@@ -97,56 +97,69 @@ def describe_diff(name, jv_val, pv_val):
 
 def test_seed(seed):
     """Run a single seed test. Returns (seed, ok, details_dict)."""
-    t0 = time.time()
-    jenv = JaxEnv(round_mode='single')
-    penv = PtEnv(round_mode='single')
-    js = jenv.init(jax.random.PRNGKey(seed))
-    ps = penv.init(key=0)
-    ps = copy_to_pt(js, ps)
+    import os as _os
+    try:
+        t0 = time.time()
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} starting...\n")
+        sys.stderr.flush()
+        jenv = JaxEnv(round_mode='single')
+        penv = PtEnv(round_mode='single')
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} init...\n"); sys.stderr.flush()
+        js = jenv.init(jax.random.PRNGKey(seed))
+        ps = penv.init(key=0)
+        ps = copy_to_pt(js, ps)
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} started, running steps...\n"); sys.stderr.flush()
 
-    ok_steps = 0
-    fail_step = fail_act = fail_fields = None
+        ok_steps = 0
+        fail_step = fail_act = fail_fields = None
 
-    for step in range(200):
-        if bool(js.terminated) or bool(js.round_state.terminated_round):
-            break
-        legal = np.where(np.array(js.legal_action_mask))[0]
-        discards = [a for a in legal if a < 37]
-        a = int(discards[0] if discards else legal[0])
-        js = jenv.step(js, a)
-        ps = penv.step(ps, a)
-        diffs = compare_all(js, ps)
-        if diffs:
-            fail_step = step
-            fail_act = a
-            fail_fields = diffs
-            break
-        ok_steps += 1
+        for step in range(200):
+            if bool(js.terminated) or bool(js.round_state.terminated_round):
+                break
+            legal = np.where(np.array(js.legal_action_mask))[0]
+            discards = [a for a in legal if a < 37]
+            a = int(discards[step % len(discards)] if discards else legal[0])
+            js = jenv.step(js, a)
+            ps = penv.step(ps, a)
+            diffs = compare_all(js, ps)
+            if diffs:
+                fail_step = step
+                fail_act = a
+                fail_fields = diffs
+                break
+            ok_steps += 1
+            if step % 20 == 19:
+                sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} step={step+1}\n"); sys.stderr.flush()
 
-    if fail_step is None:
-        diffs = compare_all(js, ps)
-        if diffs:
-            fail_step = 'END'
-            fail_act = '-'
-            fail_fields = diffs
+        if fail_step is None:
+            diffs = compare_all(js, ps)
+            if diffs:
+                fail_step = 'END'
+                fail_act = '-'
+                fail_fields = diffs
 
-    dt = time.time() - t0
-    if fail_step is None:
-        return (seed, True, {'steps': ok_steps, 'time': dt, 'error': None})
-    else:
-        details = {
-            'steps': ok_steps,
-            'time': dt,
-            'fail_step': fail_step,
-            'fail_act': fail_act,
-            'fail_fields': fail_fields,
-        }
-        # Get diff details from final state
-        for name in fail_fields:
-            fn = dict(CHECKS)[name]
-            jv_val, pv_val = jv(fn(js)), jv(fn(ps))
-            details[f'diff_{name}'] = describe_diff(name, jv_val, pv_val)
-        return (seed, False, details)
+        dt = time.time() - t0
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} done ({ok_steps} steps, {dt:.0f}s)\n"); sys.stderr.flush()
+        if fail_step is None:
+            return (seed, True, {'steps': ok_steps, 'time': dt, 'error': None})
+        else:
+            details = {
+                'steps': ok_steps,
+                'time': dt,
+                'fail_step': fail_step,
+                'fail_act': fail_act,
+                'fail_fields': fail_fields,
+            }
+            for name in fail_fields:
+                fn = dict(CHECKS)[name]
+                jv_val, pv_val = jv(fn(js)), jv(fn(ps))
+                details[f'diff_{name}'] = describe_diff(name, jv_val, pv_val)
+            return (seed, False, details)
+    except Exception as e:
+        import traceback
+        sys.stderr.write(f"[pid={_os.getpid()}] seed={seed} CRASH: {e}\n{traceback.format_exc()}\n")
+        sys.stderr.flush()
+        return (seed, False, {'steps': 0, 'time': 0, 'error': str(e)})
 
 
 if __name__ == '__main__':
@@ -162,9 +175,14 @@ if __name__ == '__main__':
         SEEDS = [1, 7, 13, 42, 99, 123, 256, 512, 1024, 2048]
 
     if args.jobs > 1:
-        print(f"Running {len(SEEDS)} seeds with {args.jobs} workers...", flush=True)
-        with Pool(min(args.jobs, len(SEEDS))) as pool:
+        import multiprocessing as _mp
+        n_workers = min(args.jobs, len(SEEDS))
+        print(f"Running {len(SEEDS)} seeds with {n_workers} workers...", flush=True)
+        sys.stderr.write(f"Spawning {n_workers} workers...\n"); sys.stderr.flush()
+        with _mp.get_context('spawn').Pool(n_workers) as pool:
+            sys.stderr.write(f"Pool created, mapping seeds...\n"); sys.stderr.flush()
             results = pool.map(test_seed, SEEDS)
+            sys.stderr.write(f"All workers done.\n"); sys.stderr.flush()
     else:
         print(f"Testing {len(SEEDS)} seeds (serial): {SEEDS}", flush=True)
         results = [test_seed(s) for s in SEEDS]
