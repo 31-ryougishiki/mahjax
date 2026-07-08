@@ -114,6 +114,44 @@ class Tile:
         num = t % 9
         return (t >= 27) or (num == 0) or (num == 8)
 
+    # ── Batch (tensor) versions ──
+
+    @staticmethod
+    def is_tile_red_batch(tiles):
+        """Vectorized: tiles (...,) int → (...,) bool."""
+        return tiles >= Tile.NUM_TILE_TYPE
+
+    @staticmethod
+    def to_red_batch(tile_types):
+        """Vectorized: tile_types (...,) int → (...,) int (black five → red five index)."""
+        result = tile_types.clone()
+        for bf, rf in [(Tile.BLACK_FIVE["m"], Tile.RED_FIVE["m"]),
+                       (Tile.BLACK_FIVE["p"], Tile.RED_FIVE["p"]),
+                       (Tile.BLACK_FIVE["s"], Tile.RED_FIVE["s"])]:
+            result = torch.where(result == bf, torch.full_like(result, rf), result)
+        return result
+
+    @staticmethod
+    def is_tile_type_five_batch(tile_types):
+        """Vectorized: tile_types (...,) int → (...,) bool."""
+        tt = tile_types
+        return (tt == 4) | (tt == 13) | (tt == 22)
+
+    @staticmethod
+    def is_tile_four_wind_batch(tiles):
+        """Vectorized: tiles (...,) int → (...,) bool."""
+        tt = Tile.to_tile_type_tensor(tiles) if tiles.shape[-1:] == () or True else tiles
+        # Use to_tile_type_tensor to handle red fives
+        tt = Tile.to_tile_type_tensor(tiles)
+        return (tt >= 27) & (tt < 31)
+
+    @staticmethod
+    def is_yaochu_batch(tiles):
+        """Vectorized: tiles (...,) int → (...,) bool."""
+        tt = Tile.to_tile_type_tensor(tiles)
+        num = tt % 9
+        return (tt >= 27) | (num == 0) | (num == 8)
+
 
 # --- River bit-packing (int32 used in place of JAX uint16) ---
 # PyTorch lacks uint16; we use int32 and mask to 16-bit.
@@ -208,12 +246,42 @@ class River:
         """Fully vectorized: rivers=(B,4,24), tiles/players/idxs=(B,), is_tsumo/riichi=(B,) bool."""
         B = rivers.shape[0]
         max_idx = rivers.shape[2] - 1  # 23
-        # Build the packed int32 value for all B envs at once
         tile_u16 = tiles.int() & _TILE_MASK
         tile_u16 = torch.where(is_tsumogiri, tile_u16 | _BIT_TSUMOGIRI, tile_u16)
         tile_u16 = torch.where(is_riichi, tile_u16 | _BIT_RIICHI, tile_u16)
-        # Scatter into rivers[b, players[b], idxs[b]] (clamp idx to prevent out-of-bounds)
         batch_idx = torch.arange(B, device=rivers.device)
         safe_idxs = idxs.long().clamp(0, max_idx)
+        rivers[batch_idx, players.long(), safe_idxs] = tile_u16
+        return rivers
+
+    @staticmethod
+    def add_meld_batch(rivers, actions, players, idxs, srcs):
+        """Batch River.add_meld. rivers: (B, 4, 24), actions/players/idxs/srcs: (B,)."""
+        B = rivers.shape[0]
+        device = rivers.device
+        batch_idx = torch.arange(B, device=device)
+        max_idx = rivers.shape[2] - 1
+        safe_idxs = idxs.long().clamp(0, max_idx)
+
+        # Read existing tile values
+        tile_u16 = rivers[batch_idx, players.long(), safe_idxs].clone()
+
+        # Compute meld_type from actions
+        mt = torch.zeros(B, dtype=torch.int32, device=device)
+        mt = torch.where((actions == Action.PON) | (actions == Action.PON_RED), 1, mt)
+        mt = torch.where(actions == Action.OPEN_KAN, 2, mt)
+        mt = torch.where((actions == Action.CHI_L) | (actions == Action.CHI_L_RED), 3, mt)
+        mt = torch.where((actions == Action.CHI_M) | (actions == Action.CHI_M_RED), 4, mt)
+        mt = torch.where((actions == Action.CHI_R) | (actions == Action.CHI_R_RED), 5, mt)
+
+        # Clear and set bits
+        tile_u16 = tile_u16 & ~_BIT_GRAY
+        tile_u16 = tile_u16 & ~_SRC_MASK
+        tile_u16 = tile_u16 & ~_MT_MASK
+        tile_u16 = tile_u16 | _BIT_GRAY
+        tile_u16 = tile_u16 | ((srcs.int() & 0b11) << _SRC_SHIFT)
+        tile_u16 = tile_u16 | ((mt.int() & 0b111) << _MT_SHIFT)
+
+        rivers = rivers.clone()
         rivers[batch_idx, players.long(), safe_idxs] = tile_u16
         return rivers

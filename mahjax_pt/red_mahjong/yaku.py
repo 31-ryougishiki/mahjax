@@ -381,6 +381,436 @@ class Yaku:
         return is_pinfu, has_outside, n_double_chow, all_chow, all_pung, \
                n_concealed_pung, nine_gates, fu
 
+    # ── Batch cache extractors ──
+    # CACHE[code] → (3,) packed int. codes: (B,) → cached: (B, 3).
+
+    @staticmethod
+    def head_batch(codes):
+        return Yaku.CACHE[codes] & 0b1111
+
+    @staticmethod
+    def chow_batch(codes):
+        return (Yaku.CACHE[codes] >> 4) & 0b1111111
+
+    @staticmethod
+    def pung_batch(codes):
+        return (Yaku.CACHE[codes] >> 11) & 0b111111111
+
+    @staticmethod
+    def n_pung_batch(codes):
+        return (Yaku.CACHE[codes] >> 20) & 0b111
+
+    @staticmethod
+    def n_double_chow_batch(codes):
+        return (Yaku.CACHE[codes] >> 23) & 0b11
+
+    @staticmethod
+    def outside_batch(codes):
+        return (Yaku.CACHE[codes] >> 25) & 1
+
+    @staticmethod
+    def nine_gates_batch(codes):
+        return Yaku.CACHE[codes] >> 26
+
+    # ── Batch pattern update (one suit, B envs) ──
+
+    @staticmethod
+    def update_batch(is_pinfu, has_outside, n_double_chow, all_chow, all_pung,
+                     n_concealed_pung, nine_gates, fu, codes, suit, last_tile_type, is_ron):
+        """Batch version of update. All pattern fields: (B, 3). codes: (B,) int."""
+        B = codes.shape[0]
+        device = codes.device
+
+        chow = Yaku.chow_batch(codes)          # (B, 3)
+        pung = Yaku.pung_batch(codes)          # (B, 3)
+        head = Yaku.head_batch(codes)          # (B, 3)
+        n_pung = Yaku.n_pung_batch(codes)      # (B, 3)
+        n_dc = Yaku.n_double_chow_batch(codes) # (B, 3)
+        outside_flag = Yaku.outside_batch(codes)  # (B, 3)
+        ng = Yaku.nine_gates_batch(codes)      # (B, 3)
+
+        open_end = ((chow ^ (chow & 1)) << 2) | (chow ^ (chow & 0b1000000))
+
+        in_range = (suit == (last_tile_type // 9)).unsqueeze(1)  # (B, 1) → broadcast
+        pos = last_tile_type % 9  # (B,)
+
+        # Pinfu
+        open_end_check = ((open_end >> pos.unsqueeze(1)) & 1) == 1  # (B, 3)
+        is_pinfu = is_pinfu & ((~in_range | open_end_check) & (pung == 0))
+
+        # Outside
+        has_outside = has_outside & (outside_flag == 1)
+
+        # Double chow count
+        n_double_chow = n_double_chow + n_dc
+
+        # Accumulate chow / pung bits
+        all_chow = all_chow | (chow << (9 * suit))
+        all_pung = all_pung | (pung << (9 * suit))
+
+        chow_range = chow | (chow << 1) | (chow << 2)
+        loss = is_ron.unsqueeze(1) & in_range & (((chow_range >> pos.unsqueeze(1)) & 1) == 0) & (((pung >> pos.unsqueeze(1)) & 1) == 1)
+        n_concealed_pung = n_concealed_pung + n_pung - loss.to(torch.int32)
+
+        nine_gates = nine_gates | (ng == 1)
+
+        outside_pung = pung & 0b100000001
+        n_outside_pung = (outside_pung & 1) + ((outside_pung >> 8) & 1)
+
+        strong = (
+            in_range
+            & ((1 << head) | ((chow & 1) << 2) | (chow & 0b1000000) | (chow << 1))
+            >> pos.unsqueeze(1) & 1
+        )
+        outside_loss = loss & ((outside_pung >> pos.unsqueeze(1)) & 1)
+
+        fu = fu + 4 * n_pung + 4 * n_outside_pung \
+             - 2 * loss.to(torch.int32) - 2 * outside_loss.to(torch.int32) \
+             + 2 * strong.to(torch.int32)
+
+        return is_pinfu, has_outside, n_double_chow, all_chow, all_pung, \
+               n_concealed_pung, nine_gates, fu
+
+    # ── Batch flatten ──
+
+    @staticmethod
+    def flatten_batch(hands_34, melds, n_meld):
+        """Combine concealed hand + melded tiles → (B, 34) counts.
+
+        hands_34: (B, 34) int32 — concealed hand
+        melds: (B, MAX_MELDS) int32 — packed melds
+        n_meld: (B,) int — number of melds
+        """
+        B = hands_34.shape[0]
+        addition = Meld._calc_addition_batch(melds)  # (B, 34) int8
+        return hands_34.to(torch.int32) + addition.to(torch.int32)
+
+    # ═════════════════════════════════════════════════════════
+    # Batch judge_hand_related
+    # ═════════════════════════════════════════════════════════
+
+    @staticmethod
+    def judge_hand_related_batch(hands_37, melds, n_meld, last_tiles, riichi, is_ron,
+                                  prevalent_winds, seat_winds, dora_indicators, ura_dora_indicators):
+        """Batch yaku judgement for B hands.
+
+        Args:
+            hands_37: (B, 37) int8 — hand tile counts
+            melds: (B, 4) int32 — packed meld values
+            n_meld: (B,) int32 — number of melds
+            last_tiles: (B,) int32 — winning tile (target for ron, last_draw for tsumo)
+            riichi: (B,) bool
+            is_ron: (B,) bool
+            prevalent_winds: (B,) int32 — round wind (0-3)
+            seat_winds: (B,) int32 — player seat wind (0-3)
+            dora_indicators: (B, 5) int8 — dora indicator tiles
+            ura_dora_indicators: (B, 5) int8 — ura dora indicator tiles
+
+        Returns:
+            yaku_vecs: (B, 52) bool
+            fan: (B,) int32
+            fu: (B,) int32
+        """
+        B = hands_37.shape[0]
+        device = hands_37.device
+        b_idx = torch.arange(B, device=device)
+
+        # ── 1. Add winning tile to hand ──
+        hands_37 = Hand.add_batch(hands_37, last_tiles)
+
+        # ── 2. Red fan ──
+        red_fan = hands_37[:, Tile.NUM_TILE_TYPE:].sum(dim=1).to(torch.int32)  # (B,)
+        # Add red from melds
+        for j in range(melds.shape[1]):
+            m = melds[:, j]
+            valid = ~(m == EMPTY_MELD)
+            if valid.any():
+                red_fan = red_fan + Meld.contains_red_batch(m).to(torch.int32) * valid.to(torch.int32)
+
+        last_tile_types = Tile.to_tile_type_tensor(last_tiles).long()  # (B,)
+        hands_34 = Hand.to_34_batch(hands_37)  # (B, 34)
+
+        # ── 3. Dora ──
+        dora = torch.zeros(B, 2, 34, dtype=torch.int8, device=device)
+        for k in range(5):  # up to 5 dora indicators
+            di = dora_indicators[:, k]  # (B,)
+            valid = di != -1
+            if valid.any():
+                dt = Tile.to_tile_type_tensor(torch.where(valid, di, torch.zeros_like(di)))
+                dora_idx = DORA_ARRAY[dt.long()]  # (B,)
+                # Scatter: dora[b, 0, dora_idx[b]] += 1
+                valid_idx = b_idx[valid]
+                dora[valid_idx, 0, dora_idx[valid_idx].long()] += 1
+
+            udi = ura_dora_indicators[:, k]  # (B,)
+            valid_u = udi != -1
+            if valid_u.any():
+                dt_u = Tile.to_tile_type_tensor(torch.where(valid_u, udi, torch.zeros_like(udi)))
+                dora_idx_u = DORA_ARRAY[dt_u.long()]
+                valid_u_idx = b_idx[valid_u]
+                dora[valid_u_idx, 1, dora_idx_u[valid_u_idx].long()] += 1
+
+        # Riichi: sum normal + ura dora (riichi.unsqueeze(1) for per-env select)
+        dora_vec = torch.where(riichi.unsqueeze(1),
+                              dora.sum(dim=1),  # (B, 34)
+                              dora[:, 0, :])    # (B, 34)
+
+        wind_tile_t = WIND_TILE.to(device)
+        seat_wind_tt = wind_tile_t[seat_winds.long()]  # (B,)
+        prevalent_wind_tt = wind_tile_t[prevalent_winds.long()]  # (B,)
+
+        # ── 4. Concealed check ──
+        is_hand_concealed = torch.ones(B, dtype=torch.bool, device=device)
+        for j in range(melds.shape[1]):
+            m = melds[:, j]
+            not_empty = ~(m == EMPTY_MELD)
+            not_closed = ~Meld.is_closed_kan_batch(m)
+            is_hand_concealed = is_hand_concealed & ~(not_empty & not_closed)
+
+        # ── 5. Initial pattern vectors (B, 3) ──
+        is_pinfu_init = (
+            is_hand_concealed
+            & (n_meld == 0)
+            & (last_tile_types < 27)
+            & (hands_34[:, 27:31] < 3).all(dim=1)
+            & (hands_34[b_idx, seat_wind_tt] == 0)
+            & (hands_34[b_idx, prevalent_wind_tt] == 0)
+            & (hands_34[:, 31:34] == 0).all(dim=1)
+        ).unsqueeze(1).expand(B, 3)  # (B, 3)
+
+        # has_outside: all melds have outside (empty melds → True)
+        has_outside_init = torch.ones(B, dtype=torch.bool, device=device)
+        for j in range(melds.shape[1]):
+            m = melds[:, j]
+            has_outside_init = has_outside_init & Meld.has_outside_batch(m)
+        has_outside_init = has_outside_init.unsqueeze(1).expand(B, 3)  # (B, 3)
+
+        # Meld chow/pung bits
+        meld_chow_bits = torch.zeros(B, dtype=torch.int32, device=device)
+        meld_pung_bits = torch.zeros(B, dtype=torch.int32, device=device)
+        for j in range(melds.shape[1]):
+            m = melds[:, j]
+            valid = ~(m == EMPTY_MELD)
+            if valid.any():
+                meld_chow_bits = meld_chow_bits | Meld.chow_batch(m)
+                meld_pung_bits = meld_pung_bits | Meld.suited_pung_batch(m)
+
+        all_chow = meld_chow_bits.unsqueeze(1).expand(B, 3)  # (B, 3)
+        all_pung = meld_pung_bits.unsqueeze(1).expand(B, 3)  # (B, 3)
+
+        # n_kan, n_closed_kan
+        n_kan = torch.zeros(B, dtype=torch.int32, device=device)
+        n_closed_kan = torch.zeros(B, dtype=torch.int32, device=device)
+        for j in range(melds.shape[1]):
+            m = melds[:, j]
+            valid = ~(m == EMPTY_MELD)
+            if valid.any():
+                n_kan = n_kan + Meld.is_kan_batch(m).to(torch.int32)
+                n_closed_kan = n_closed_kan + Meld.is_closed_kan_batch(m).to(torch.int32)
+
+        # n_concealed_pung
+        base_concealed = (hands_34[:, 27:] >= 3).sum(dim=1)  # (B,)
+        penalty = is_ron & (last_tile_types >= 27) & (hands_34[b_idx, last_tile_types] >= 3)
+        n_concealed_pung_val = base_concealed - penalty.to(torch.int32) + n_closed_kan
+        n_concealed_pung = n_concealed_pung_val.unsqueeze(1).expand(B, 3)  # (B, 3)
+
+        nine_gates = torch.zeros(B, 3, dtype=torch.bool, device=device)
+
+        # ── 6. Wind pair / dragon pair / honor pon fu ──
+        seat_pair = hands_34[b_idx, seat_wind_tt] == 2  # (B,)
+        prev_pair = hands_34[b_idx, prevalent_wind_tt] == 2  # (B,)
+        renfu_pair = (seat_wind_tt == prevalent_wind_tt) & seat_pair
+        # If renfu: 4 fu. Otherwise: 2 per wind pair (both can apply).
+        base_wind_fu = (torch.where(seat_pair, 2, 0) + torch.where(prev_pair, 2, 0))
+        wind_pair_fu = torch.where(renfu_pair, torch.full_like(base_wind_fu, 4), base_wind_fu)
+
+        dragon_pair_fu = torch.where((hands_34[:, 31:34] == 2).any(dim=1), 2,
+                                     torch.zeros(B, dtype=torch.int32, device=device))
+
+        honor_pon_fu = torch.zeros(B, dtype=torch.int32, device=device)
+        for i in range(27, 34):
+            count = hands_34[:, i]  # (B,)
+            is_three = count == 3
+            if is_three.any():
+                # Serial: 4 * (2 - penalty), penalty=1 if ron on this tile else 0
+                # → match=4, no_match=8
+                mult = torch.where(is_ron & (last_tile_types == i),
+                                   torch.tensor(4, dtype=torch.int32, device=device),
+                                   torch.tensor(8, dtype=torch.int32, device=device))
+                honor_pon_fu = honor_pon_fu + is_three.to(torch.int32) * mult
+
+        # Base fu
+        meld_fu_sum = torch.zeros(B, dtype=torch.int32, device=device)
+        for j in range(melds.shape[1]):
+            m = melds[:, j]
+            valid = ~(m == EMPTY_MELD)
+            if valid.any():
+                meld_fu_sum = meld_fu_sum + Meld.fu_batch(m).to(torch.int32)
+
+        base_fu = (torch.where(~is_ron, 2, 0)
+                   + meld_fu_sum
+                   + wind_pair_fu
+                   + dragon_pair_fu
+                   + honor_pon_fu
+                   + torch.where((last_tile_types >= 27) & (hands_34[b_idx, last_tile_types] == 2), 1, 0))
+
+        fu = base_fu.unsqueeze(1).expand(B, 3)  # (B, 3)
+
+        # ── 7. Suit codes ──
+        POW9 = torch.tensor([5**8, 5**7, 5**6, 5**5, 5**4, 5**3, 5**2, 5**1, 5**0],
+                            dtype=torch.int32, device=device)
+        suits = hands_34[:, :27].reshape(B, 3, 9).to(torch.int32)  # (B, 3, 9)
+        codes = (suits * POW9).sum(dim=2)  # (B, 3)
+
+        n_double_chow = torch.zeros(B, 3, dtype=torch.int32, device=device)
+
+        # Process each suit
+        for suit in range(3):
+            c = codes[:, suit]  # (B,)
+            is_pinfu_init, has_outside_init, n_double_chow, all_chow, all_pung, \
+                n_concealed_pung, nine_gates, fu = Yaku.update_batch(
+                    is_pinfu_init, has_outside_init, n_double_chow, all_chow, all_pung,
+                    n_concealed_pung, nine_gates, fu,
+                    c, suit, last_tile_types, is_ron)
+
+        # ── 8. Fu cleanup ──
+        fu = fu * (is_pinfu_init == 0).to(torch.int32)
+        fu = fu + 20 + 10 * (is_hand_concealed & is_ron).unsqueeze(1).to(torch.int32)
+        # Kuipin: open hand with fu==20 → min 30 fu
+        is_open = (~is_hand_concealed).unsqueeze(1)
+        fu = fu + 10 * (is_open & (fu == 20)).to(torch.int32)
+
+        # ── 9. Global shape features ──
+        flatten = Yaku.flatten_batch(hands_34, melds, n_meld)  # (B, 34)
+
+        four_winds = (flatten[:, 27:31] >= 3).sum(dim=1)  # (B,)
+        three_dragons = (flatten[:, 31:34] >= 3).sum(dim=1)  # (B,)
+        has_tanyao = (flatten[:, TANYAO_TILE] > 0).any(dim=1)  # (B,)
+        has_honor = (flatten[:, 27:34] > 0).any(dim=1)  # (B,)
+        has_outside_in_flatten = (flatten[:, OUTSIDE_TILE] > 0).any(dim=1)  # (B,)
+
+        suit_count = ((flatten[:, 0:9] > 0).any(dim=1).to(torch.int32)
+                      + (flatten[:, 9:18] > 0).any(dim=1).to(torch.int32)
+                      + (flatten[:, 18:27] > 0).any(dim=1).to(torch.int32))
+        is_flush = suit_count == 1  # (B,)
+
+        # ── 10. Build yaku matrix (B, 52, 3) ──
+        yaku = torch.zeros(B, NUM_TENHOU_YAKU, 3, dtype=torch.bool, device=device)
+
+        yaku[:, YI.Pinfu] = is_pinfu_init  # (B, 3)
+        yaku[:, YI.PureDoubleChis] = is_hand_concealed.unsqueeze(1).expand(B, 3) & (n_double_chow == 1)
+        yaku[:, YI.TwicePureDoubleChis] = n_double_chow == 2
+        yaku[:, YI.OutsideHand] = has_outside_init & has_honor.unsqueeze(1) & has_tanyao.unsqueeze(1)
+        yaku[:, YI.TerminalsInAllSets] = has_outside_init & (~has_honor.unsqueeze(1))
+
+        # PureStraight: per-pattern chow check
+        for p in range(3):
+            cb = all_chow[:, p]  # (B,)
+            yaku[:, YI.PureStraight, p] = ((cb & 0b1001001) == 0b1001001) \
+                | ((cb >> 9 & 0b1001001) == 0b1001001) \
+                | ((cb >> 18 & 0b1001001) == 0b1001001)
+
+        # TripleChow: per-pattern
+        for p in range(3):
+            cb = all_chow[:, p]
+            pat = 0b1000000001000000001
+            out = (cb & pat) == pat
+            for s in range(1, 8):
+                out = out | ((cb >> s & pat) == pat)
+            yaku[:, YI.MixedTripleChis, p] = out
+
+        # TriplePung: per-pattern
+        for p in range(3):
+            pb = all_pung[:, p]
+            pat = 0b1000000001000000001
+            out = (pb & pat) == pat
+            for s in range(1, 9):
+                out = out | ((pb >> s & pat) == pat)
+            yaku[:, YI.TriplePons, p] = out
+
+        yaku[:, YI.AllPons] = all_chow == 0
+        yaku[:, YI.ThreeConcealedPons] = n_concealed_pung == 3
+        yaku[:, YI.ThreeKans] = n_kan.unsqueeze(1).expand(B, 3) == 3
+
+        # ── 11. Pick best pattern ──
+        fan_open = _FAN[0].unsqueeze(0)  # (1, 52)
+        fan_conc = _FAN[1].unsqueeze(0)  # (1, 52)
+        fan_selected = torch.where(is_hand_concealed.unsqueeze(1), fan_conc, fan_open)  # (B, 52)
+
+        pattern_score = torch.zeros(B, 3, dtype=torch.int32, device=device)
+        for p in range(3):
+            pattern_score[:, p] = (fan_selected.to(torch.int32) * yaku[:, :, p].to(torch.int32)).sum(dim=1) * 200 + fu[:, p]
+
+        best_pattern = torch.argmax(pattern_score, dim=1)  # (B,)
+        yaku_best = yaku[b_idx, :, best_pattern]  # (B, 52)
+        fu_best = fu[b_idx, best_pattern]  # (B,)
+        fu_best = fu_best + (-fu_best % 10)  # round up to 10
+
+        # ── 12. Seven-pairs override ──
+        # Serial: is_mentsu_hand = twice_double_chis or (pairs < 7)
+        # Seven pairs if: no twice_double_chis AND pairs >= 7
+        pairs_count = (hands_34 == 2).sum(dim=1)  # (B,)
+        is_mentsu_hand = yaku_best[:, YI.TwicePureDoubleChis] | (pairs_count < 7)
+        seven_pairs_mask = ~is_mentsu_hand  # (B,)
+        if seven_pairs_mask.any():
+            si = b_idx[seven_pairs_mask]
+            yaku_best[si] = False
+            yaku_best[si, YI.SevenPairs] = True
+            fu_best[si] = 25
+
+        # ── 13. Best-only yaku updates ──
+        yaku_best[:, YI.AllSimples] = ~(has_honor | has_outside_in_flatten)
+        yaku_best[:, YI.HalfFlush] = is_flush & has_honor
+        yaku_best[:, YI.FullFlush] = is_flush & (~has_honor)
+        yaku_best[:, YI.AllTerminalsAndHonors] = ~has_tanyao
+        yaku_best[:, YI.WhiteDragon] = flatten[:, 31] >= 3
+        yaku_best[:, YI.GreenDragon] = flatten[:, 32] >= 3
+        yaku_best[:, YI.RedDragon] = flatten[:, 33] >= 3
+        yaku_best[:, YI.LittleThreeDragons] = (flatten[:, 31:34] >= 2).all(dim=1) & (three_dragons >= 2)
+        yaku_best[:, YI.FullyConcealedHand] = is_hand_concealed & ~is_ron
+        yaku_best[:, YI.Riichi] = riichi
+
+        # Wind yakus
+        for w in range(4):
+            yaku_best[:, YI.PrevalentWindEast + w] = (prevalent_winds == w) & (flatten[:, WIND_TILE[w]] >= 3)
+            yaku_best[:, YI.SeatWindEast + w] = (seat_winds == w) & (flatten[:, WIND_TILE[w]] >= 3)
+
+        # ── 14. Yakuman check ──
+        win_tile_count = hands_34[b_idx, last_tile_types]  # (B,)
+        four_concealed_tsumo = (n_concealed_pung_val == 4) & (win_tile_count >= 3) & ~is_ron
+        four_concealed_single = (n_concealed_pung_val == 4) & (win_tile_count == 2)
+
+        yakuman = torch.zeros(B, NUM_TENHOU_YAKU, dtype=torch.bool, device=device)
+        yakuman[:, YI.BigThreeDragons] = three_dragons == 3
+        yakuman[:, YI.BigFourWinds] = four_winds == 4
+        yakuman[:, YI.LittleFourWinds] = (flatten[:, 27:31] >= 2).all(dim=1) & (four_winds == 3)
+        yakuman[:, YI.NineGates] = nine_gates.any(dim=1)
+        kokushi_tiles = torch.tensor([0, 8, 9, 17, 18, 26] + list(range(27, 34)), dtype=torch.int64, device=device)
+        yakuman[:, YI.ThirteenOrphans] = (hands_34[:, kokushi_tiles] > 0).all(dim=1) & ~has_tanyao
+        yakuman[:, YI.AllTerminals] = ~has_tanyao & ~has_honor
+        yakuman[:, YI.AllHonors] = (flatten[:, 0:27] == 0).all(dim=1)
+        yakuman[:, YI.AllGreen] = flatten[:, ALL_GREEN_TILE].sum(dim=1) == 14
+        yakuman[:, YI.FourConcealedPons] = four_concealed_tsumo
+        yakuman[:, YI.CompletedFourConcealedPons] = four_concealed_single
+        yakuman[:, YI.FourKans] = n_kan == 4
+
+        yakuman_num = (yakuman.to(torch.int32) @ _YAKUMAN).to(torch.int32)  # (B,)
+
+        has_yakuman = yakuman.any(dim=1)  # (B,)
+        if has_yakuman.any():
+            yi = b_idx[has_yakuman]
+            yaku_best[yi] = yakuman[yi]
+            fu_best[yi] = 0
+
+        # Compute fan: yaku_fan + dora_fan + red_fan (matches serial L618-622)
+        # Note: .sum() returns int64 (Long) in PyTorch, must explicitly cast to int32
+        yaku_fan = (fan_selected * yaku_best.to(torch.int32)).sum(dim=1, dtype=torch.int32)  # (B,)
+        dora_fan = (flatten.to(torch.int32) * dora_vec.to(torch.int32)).sum(dim=1, dtype=torch.int32)  # (B,)
+        fan_val = yaku_fan + dora_fan + red_fan
+        fan_val = torch.where(has_yakuman, yakuman_num.to(torch.int32), fan_val)
+
+        return yaku_best, fan_val.to(torch.int32), fu_best.to(torch.int32)
+
     # ═════════════════════════════════════════════════════════
     # Main judge entry points
     # ═════════════════════════════════════════════════════════

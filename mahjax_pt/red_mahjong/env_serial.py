@@ -693,6 +693,9 @@ class RedMahjongSerial(Env):
         if is_furiten:
             state.players.furiten_by_pass[cp] = False
 
+        # JAX _discard L988: store can_win for current player's post-discard hand
+        state.players.can_win[cp] = can_ron
+
         # Clear per-discard flags (JAX _discard L965-966, L990, L1020)
         state.round_state.last_draw = -1
         state.players.ippatsu[cp] = False
@@ -1213,6 +1216,12 @@ class RedMahjongSerial(Env):
         state.players.ippatsu[cp] = False
         state.round_state.kan_declared = False
         state.round_state.can_after_kan = True
+
+        # JAX L1297: compute can_win from the pre-draw (13-tile) hand
+        # before adding the rinshan tile
+        h_34_pre_draw = Hand.to_34(state.players.hand_with_red[cp])
+        can_ron_vec = torch.tensor([Hand.can_ron(h_34_pre_draw, t) for t in range(34)], dtype=torch.bool)
+        state.players.can_win[cp] = can_ron_vec
 
         state.round_state.last_draw = tile
 
