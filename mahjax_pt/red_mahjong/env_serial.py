@@ -130,21 +130,25 @@ def _accept_riichi(state):
     already_riichi = bool(state.players.riichi[lp].item())
     has_declared = (not already_riichi) and bool(state.players.riichi_declared[lp].item())
 
-    if not already_riichi and has_declared:
-        # Pay riichi bet
-        state.round_state.score[lp] -= RIICHI_BET // 100
-        state.rewards[lp] += -10.0  # -1000 points in reward units
-        state.round_state.kyotaku += 1
+    # JAX _accept_riichi L1194-1196: rewards = jnp.zeros(4).at[l_p].set(-10 if has_declared else 0)
+    # JAX REPLACES rewards entirely; PT must mirror this, not accumulate with +=
+    if not already_riichi:
+        state.rewards.zero_()
+        if has_declared:
+            # Pay riichi bet
+            state.round_state.score[lp] -= RIICHI_BET // 100
+            state.rewards[lp] = -10.0  # -1000 points in reward units
+            state.round_state.kyotaku += 1
 
-        # Set riichi flag
-        state.players.riichi[lp] = True
-        state.players.riichi_declared[lp] = False
+            # Set riichi flag
+            state.players.riichi[lp] = True
+            state.players.riichi_declared[lp] = False
 
-        # Ippatsu and Double Riichi
-        state.players.ippatsu[lp] = True
-        is_double = _is_first_turn(state.round_state.next_deck_ix) and \
-            (int(state.players.meld_counts.sum().item()) == 0)
-        state.players.double_riichi[lp] = is_double
+            # Ippatsu and Double Riichi
+            state.players.ippatsu[lp] = True
+            is_double = _is_first_turn(state.round_state.next_deck_ix) and \
+                (int(state.players.meld_counts.sum().item()) == 0)
+            state.players.double_riichi[lp] = is_double
 
     return state
 
@@ -502,20 +506,29 @@ class RedMahjongSerial(Env):
     # JAX: _make_legal_action_mask_after_draw lines 855-900
 
     def _make_legal_action_mask_after_draw_riichi(self, state, cp):
-        """Legal actions after draw for a riichi player (JAX _w_riichi variant)."""
+        """Legal actions after draw for a riichi player (JAX _make_legal_action_mask_after_draw_w_riichi).
+
+        JAX: a riichi player can ONLY tsumogiri, closed kan (that preserves wait), or tsumo.
+        There are NO individual discard actions — the riichi commitment forces tsumogiri.
+        """
         hand = state.players.hand_with_red[cp]
         mask = ZERO_MASK_1D.clone()
 
-        for i in range(Tile.NUM_TILE_TYPE_WITH_RED):
-            mask[i] = hand[i] > 0
+        # JAX: TSUMOGIRI is always True (unconditionally)
+        mask[Action.TSUMOGIRI] = True
 
+        # Closed kan: can_closed_kan_after_riichi & ~is_haitei
+        if not state.round_state.is_haitei:
+            for i in range(34):
+                if Hand.can_closed_kan_after_riichi(hand, i, state.players.can_win[cp]):
+                    mask[37 + i] = True
+
+        # TSUMO: can_win on the drawn tile
         ld = int(state.round_state.last_draw)
-        if ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED and hand[ld] >= 2:
-            mask[Action.TSUMOGIRI] = True
-
-        for i in range(34):
-            if Hand.can_closed_kan(hand, i):
-                mask[37 + i] = True
+        if ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED:
+            ld_tt = int(Tile.to_tile_type(ld))
+            if bool(state.players.can_win[cp, ld_tt].item()):
+                mask[Action.TSUMO] = True
 
         return mask
 
@@ -663,21 +676,22 @@ class RedMahjongSerial(Env):
         # and set the permanent riichi flag.
 
         # Furiten — JAX L979-990: check full river against current can_ron
+        # JAX ALWAYS recomputes furiten_by_discard every discard (unconditionally).
+        # PT must mirror this: when not tenpai, can_ron is all False → is_furiten=False.
         h_after_34 = Hand.to_34(state.players.hand_with_red[cp])
-        if Hand.is_tenpai(h_after_34):
-            can_ron = torch.tensor([Hand.can_ron(h_after_34, t) for t in range(34)], dtype=torch.bool)
-            # Check all tiles in this player's river (JAX: vmap over decode_tile)
-            river_tiles = River.decode_tile(state.players.river[cp])
-            is_furiten = False
-            for ri in range(int(state.players.discard_counts[cp].item())):
-                rt = int(river_tiles[ri].item())
-                if rt >= 0 and rt < 34 and _is_waiting_tile(can_ron, rt):
-                    is_furiten = True
-                    break
-            # JAX SETS (not ORs) — recomputes from full river every time
-            state.players.furiten_by_discard[cp] = is_furiten
-            if is_furiten:
-                state.players.furiten_by_pass[cp] = False
+        can_ron = torch.tensor([Hand.can_ron(h_after_34, t) for t in range(34)], dtype=torch.bool)
+        # Check all tiles in this player's river (JAX: vmap over decode_tile)
+        river_tiles = River.decode_tile(state.players.river[cp])
+        is_furiten = False
+        for ri in range(int(state.players.discard_counts[cp].item())):
+            rt = int(river_tiles[ri].item())
+            if rt >= 0 and rt < 34 and _is_waiting_tile(can_ron, rt):
+                is_furiten = True
+                break
+        # JAX SETS (not ORs) — recomputes from full river every time
+        state.players.furiten_by_discard[cp] = is_furiten
+        if is_furiten:
+            state.players.furiten_by_pass[cp] = False
 
         # Clear per-discard flags (JAX _discard L965-966, L990, L1020)
         state.round_state.last_draw = -1
@@ -824,7 +838,11 @@ class RedMahjongSerial(Env):
 
         ld = int(state.round_state.last_draw)
         if ld >= 0 and ld < Tile.NUM_TILE_TYPE_WITH_RED:
-            mask[Action.TSUMOGIRI] = (hand[ld] >= 2) and discard_ok[ld]
+            # JAX: individual discard of last_draw requires >= 2 copies
+            # (overrides the generic hand[i] > 0 check from the slice above)
+            mask[ld] = bool((hand[ld] >= 2) and discard_ok[ld])
+            # JAX: TSUMOGIRI only requires hand[ld] > 0 (implied by discard_ok[ld])
+            mask[Action.TSUMOGIRI] = bool(discard_ok[ld])
 
         state.legal_action_mask = mask
         state.players.riichi_declared[cp] = True

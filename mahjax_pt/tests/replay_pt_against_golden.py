@@ -116,6 +116,8 @@ def _copy_golden_to_pt(golden, state):
     pr.deck[:] = torch.from_numpy(G['round_state.deck']).to(pr.deck.dtype)
     pr.score[:] = torch.from_numpy(G['round_state.score']).to(pr.score.dtype)
     pr.dora_indicators[:] = torch.from_numpy(G['round_state.dora_indicators']).to(pr.dora_indicators.dtype)
+    if 'round_state.ura_dora_indicators' in G:
+        pr.ura_dora_indicators[:] = torch.from_numpy(G['round_state.ura_dora_indicators']).to(pr.ura_dora_indicators.dtype)
     pr.order_points[:] = torch.from_numpy(G['round_state.order_points']).to(pr.order_points.dtype)
     pr.seat_wind[:] = torch.from_numpy(G['round_state.seat_wind']).to(pr.seat_wind.dtype)
 
