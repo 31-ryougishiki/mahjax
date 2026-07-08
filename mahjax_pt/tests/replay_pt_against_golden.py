@@ -271,6 +271,7 @@ if __name__ == '__main__':
     # ── Report ──
     n_pass = 0
     for seed, ok, d, _vl in results:
+        seed = seed if seed is not None else _vl  # crash fallback
         if ok:
             print(f"seed={seed:4d}: OK ({d['steps']} steps, {d['time']:.1f}s)", flush=True)
             n_pass += 1
@@ -281,7 +282,7 @@ if __name__ == '__main__':
     if n_pass == n_seeds:
         print("ALL SEEDS PASS!", flush=True)
     else:
-        for seed, ok, d in results:
+        for seed, ok, d, _vl in results:
             if not ok:
                 print(f"  seed={seed} FAILED at step {d['fail_step']}: {d['fail_fields']}", flush=True)
         sys.exit(1)

@@ -662,12 +662,21 @@ class RedMahjongSerial(Env):
         # _accept_riichi (called at top of _draw) can process the payment
         # and set the permanent riichi flag.
 
-        # Furiten
-        h_after = state.players.hand_with_red[cp]
-        if Hand.is_tenpai(Hand.to_34(h_after)):
-            can_ron = torch.tensor([Hand.can_ron(h_after, t) for t in range(34)], dtype=torch.bool)
-            if _is_waiting_tile(can_ron, tile):
-                state.players.furiten_by_discard[cp] = True
+        # Furiten — JAX L979-990: check full river against current can_ron
+        h_after_34 = Hand.to_34(state.players.hand_with_red[cp])
+        if Hand.is_tenpai(h_after_34):
+            can_ron = torch.tensor([Hand.can_ron(h_after_34, t) for t in range(34)], dtype=torch.bool)
+            # Check all tiles in this player's river (JAX: vmap over decode_tile)
+            river_tiles = River.decode_tile(state.players.river[cp])
+            is_furiten = False
+            for ri in range(int(state.players.discard_counts[cp].item())):
+                rt = int(river_tiles[ri].item())
+                if rt >= 0 and rt < 34 and _is_waiting_tile(can_ron, rt):
+                    is_furiten = True
+                    break
+            # JAX SETS (not ORs) — recomputes from full river every time
+            state.players.furiten_by_discard[cp] = is_furiten
+            if is_furiten:
                 state.players.furiten_by_pass[cp] = False
 
         # Clear per-discard flags (JAX _discard L965-966, L990, L1020)
