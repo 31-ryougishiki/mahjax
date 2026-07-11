@@ -179,6 +179,19 @@ PT 多步训练 (T=16, B=8, 20 updates):
 | ACNet 权重迁移正确 | ⚠️ shape 自动匹配完成 (128/128)，forward pass 仍有残留差异 |
 | PPO 数学公式正确 | ✅ 验证通过 (L1-L4) |
 
+### ACNet Golden Data 回放结果 (2026-07-11)
+
+JAX ACNet (160 params) 录制 → PT ACNet (128 params, 自动 shape 匹配) 回放：
+
+| 组件 | 结果 | 数值 |
+|------|------|------|
+| GAE advantages | ✅ PASS | diff=0.00e+00 |
+| GAE valid_mask | ✅ PASS | 0 mismatch |
+| 权重迁移 | ✅ PASS | 128/128 mapped, 32 skipped |
+| PPO loss | ❌ FAIL | diff=7.54e-01 |
+| Gradient | ❌ FAIL | max diff=3.41e+00 |
+| Parameter (1 step) | ❌ FAIL | max diff=1.20e-03 |
+
 ### 后续工作
 
 - ACNet forward pass 逐层对比定位残留差异（Transformer/LayerNorm 实现细节）

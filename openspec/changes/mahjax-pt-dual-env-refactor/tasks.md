@@ -125,6 +125,18 @@ _(无 — 所有 Phase 已完成)_
 
 ### ACNet Golden Data 验证 (2026-07-11, 新增)
 
+**验证流程**: JAX ACNet (完整 Transformer, 160 params) 真实对局录制 → PT ACNet (128 params) 自动 shape 匹配回放
+
+| 组件 | 结果 | 详情 |
+|------|------|------|
+| **GAE advantages** | ✅ **0.00e+00** | bit-exact, 完全一致 |
+| **GAE valid_mask** | ✅ **0 mismatch** | 所有位置一致 |
+| **权重迁移** | ✅ **128/128** | 自动 shape 匹配, 32 MHA bias 正确跳过 |
+| **Forward pass** | ❌ 大差异 | loss diff=7.54e-01, grad diff=3.41e+00 |
+| **参数更新 (1 step)** | ❌ 1.20e-03 | 受 forward 差异影响 |
+
+**已确认**: GAE 完全对齐。Forward pass 差异来自 ACNet 的 Transformer/LayerNorm/JFE 实现细节（非精度问题，需逐层对比定位）。
+
 | 文件 | 用途 |
 |------|------|
 | `record_jax_acnet_golden_f64.py` | JAX ACNet (完整 Transformer) 真实对局 Golden Data 录制 |
