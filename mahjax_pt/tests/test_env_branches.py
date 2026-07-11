@@ -1,63 +1,21 @@
 #!/usr/bin/env python3
 """
-Comprehensive env branch tests — JAX vs PyTorch comparison.
+Comprehensive env branch tests — PyTorch implementation.
 
-Each test constructs an identical game state in both frameworks,
-calls the relevant function, and compares outputs.
+Each test constructs a specific game state and verifies
+correct behavior of environment functions (masks, settlement, game flow).
 
 Usage:
     PYTHONPATH=. python mahjax_pt/tests/test_env_branches.py
     PYTHONPATH=. python mahjax_pt/tests/test_env_branches.py -v
     PYTHONPATH=. python mahjax_pt/tests/test_env_branches.py --filter tsumo
 """
-import sys, os, math, traceback, argparse
-import numpy as np
-import jax, jax.numpy as jnp
-import mahjax
-from mahjax.red_mahjong.action import Action as JAction
-from mahjax.red_mahjong.env import _make_state, _replace_state, _make_legal_action_mask_after_draw, \
-    _make_legal_action_mask_after_discard, _draw as jax_draw_fn, yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile
-from mahjax.red_mahjong.state import EnvState as JaxState, PlayerStateArrays as JaxPlayers, \
-    RoundState as JaxRound, GameConfig, default_game_config
-from mahjax.red_mahjong.hand import Hand as JHand
-from mahjax.red_mahjong.tile import Tile as JTile
-
+import sys, math, traceback, argparse, time
 import torch
 from mahjax_pt.red_mahjong.env import RedMahjong
-from mahjax_pt.red_mahjong.state import EnvState, PlayerStateArrays, RoundState, GameConfig as PTConfig
-from mahjax_pt.red_mahjong.tile import Tile
-from mahjax_pt.red_mahjong.hand import Hand
+from mahjax_pt.red_mahjong.state import EnvState
 from mahjax_pt.red_mahjong.action import Action
-
-# ═══════════════════════════════════════════════════════════════
-# Helpers
-# ═══════════════════════════════════════════════════════════════
-
-def _hand_34(counts_dict):
-    """Create a 34-dim hand tensor from {tile_type: count}."""
-    h = torch.zeros(34, dtype=torch.int8)
-    for t, c in counts_dict.items():
-        h[t] = c
-    return h
-
-def _hand_37(counts_dict):
-    """Create a 37-dim hand tensor from {tile_idx: count}."""
-    h = torch.zeros(37, dtype=torch.int8)
-    for t, c in counts_dict.items():
-        h[t] = c
-    return h
-
-def _jax_hand_34(counts_dict):
-    h = jnp.zeros(34, dtype=jnp.int8)
-    for t, c in counts_dict.items():
-        h = h.at[t].set(c)
-    return h
-
-def _jax_hand_37(counts_dict):
-    h = jnp.zeros(37, dtype=jnp.int8)
-    for t, c in counts_dict.items():
-        h = h.at[t].set(c)
-    return h
+from mahjax_pt.tests.test_cases import hand_34, hand_37
 
 def make_pt_state(cp=0, hand_37=None, hand_34=None, melds=None, riichi=None,
                   is_hand_concealed=None,
@@ -160,8 +118,8 @@ def make_pt_state(cp=0, hand_37=None, hand_34=None, melds=None, riichi=None,
 def test_tsumo_mask_concealed():
     """Tsumo should be legal for a concealed winning hand (menzen tsumo = yaku)."""
     # Complete hand: 123m 456p 789s 東東東 中中
-    h34 = _hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:2})
-    h37 = _hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:2})
+    h34 = hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:2})
+    h37 = hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:2})
     s = make_pt_state(cp=0, hand_37=h37, hand_34=h34, is_hand_concealed=True,
                       next_deck_ix=50, last_deck_ix=14)
 
@@ -176,8 +134,8 @@ def test_tsumo_mask_open_no_yaku():
     # Complete hand shape: 123m 456p 789s 東東東 + pon 中中中 = 4 groups + pair
     # After pon of 中中中, remaining tiles: 123m 456p 789s 東東東 (12 tiles) + drawn tile = 13 + draw
     # With last_draw completing the hand (e.g. another 東), hand shape is winning
-    h37 = _hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:4})  # 14 tiles with 東×4
-    h34 = _hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:4})
+    h37 = hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:4})  # 14 tiles with 東×4
+    h34 = hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:4})
     meld = Meld.init(Action.PON, 33, 1)
     s = make_pt_state(cp=0, hand_37=h37, hand_34=h34,
                       melds=[ [meld], [], [], [] ],
@@ -194,8 +152,8 @@ def test_tsumo_mask_open_no_yaku():
 def test_tsumo_mask_haitei():
     """Tsumo should be legal on haitei even for open hand (houtei = yaku)."""
     # Complete winning hand shape
-    h37 = _hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:2})  # 14 tiles
-    h34 = _hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:2})
+    h37 = hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:2})  # 14 tiles
+    h34 = hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:2})
     s = make_pt_state(cp=0, hand_37=h37, hand_34=h34,
                       is_hand_concealed=False, is_haitei=True,
                       can_win=torch.zeros(4,34,dtype=torch.bool),
@@ -209,8 +167,8 @@ def test_tsumo_mask_haitei():
 
 def test_ron_mask_furiten():
     """Ron should be blocked by furiten."""
-    h37 = _hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:1})
-    h34 = _hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:1})
+    h37 = hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:1})
+    h34 = hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:1})
     s = make_pt_state(cp=0, hand_37=h37, hand_34=h34, target=33,
                       can_win=torch.zeros(4,34,dtype=torch.bool),
                       has_yaku=torch.ones(4,2,dtype=torch.bool),  # has yaku for all
@@ -225,7 +183,7 @@ def test_ron_mask_furiten():
 
 def test_kan_blocked_by_haitei():
     """Kan should be blocked on haitei."""
-    h37 = _hand_37({0:4})
+    h37 = hand_37({0:4})
     s = make_pt_state(cp=0, hand_37=h37, is_haitei=True, next_deck_ix=50, last_deck_ix=14)
 
     env = RedMahjong()
@@ -236,7 +194,7 @@ def test_kan_blocked_by_haitei():
 
 def test_kan_blocked_by_4kan_limit():
     """Kan should be blocked after 4 kan."""
-    h37 = _hand_37({0:4})
+    h37 = hand_37({0:4})
     s = make_pt_state(cp=0, hand_37=h37, is_haitei=False, next_deck_ix=50, last_deck_ix=14)
     s.players.n_kan = torch.tensor([1, 1, 1, 1], dtype=torch.int8)  # 4 total
 
@@ -249,8 +207,8 @@ def test_kan_blocked_by_4kan_limit():
 def test_riichi_needs_tiles_left():
     """Riichi should be blocked when <4 tiles remain."""
     # Tenpai hand: 123m 456p 789s 東東 中中中 = 3 groups + 2 pairs
-    h37 = _hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:2, 33:3})
-    h34 = _hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:2, 33:3})
+    h37 = hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:2, 33:3})
+    h34 = hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:2, 33:3})
     # next_deck_ix - last_deck_ix = 16 - 14 = 2 tiles left (< 4)
     s = make_pt_state(cp=0, hand_37=h37, hand_34=h34,
                       score=[260, 250, 250, 250],
@@ -297,8 +255,8 @@ def test_tsumo_settlement():
 
 def test_meld_blocked_by_riichi():
     """A riichi player cannot call melds on another's discard."""
-    h37 = _hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:1})
-    s = make_pt_state(cp=0, hand_37=h37, hand_34=_hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:1}),
+    h37 = hand_37({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:1})
+    s = make_pt_state(cp=0, hand_37=h37, hand_34=hand_34({0:1,1:1,2:1, 9:1,10:1,11:1, 24:1,25:1,26:1, 27:3, 33:1}),
                       target=0, riichi={1: True}, next_deck_ix=50, last_deck_ix=14)
 
     env = RedMahjong()

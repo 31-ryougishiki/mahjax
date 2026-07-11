@@ -392,6 +392,182 @@ class Hand:
         return Hand.add_batch(hands, tiles, -x)
 
     @staticmethod
+    def chi_batch(hands, targets, actions):
+        """Batch chi hand mutation.
+
+        hands: (B, 37) int8 — current hands
+        targets: (B,) int — the claimed (discarded) tile
+        actions: (B,) int — chi action (CHI_L / CHI_M / CHI_R + red variants)
+
+        Returns: (B, 37) int8 — mutated hands
+        """
+        B = hands.shape[0]
+        device = hands.device
+        hands = hands.clone()
+
+        target_tt = Tile.to_tile_type_tensor(targets).long()  # (B,) 0-33
+        chi_idx = torch.full((B,), -1, dtype=torch.long, device=device)
+        chi_idx = torch.where((actions == Action.CHI_L) | (actions == Action.CHI_L_RED), 0, chi_idx)
+        chi_idx = torch.where((actions == Action.CHI_M) | (actions == Action.CHI_M_RED), 1, chi_idx)
+        chi_idx = torch.where((actions == Action.CHI_R) | (actions == Action.CHI_R_RED), 2, chi_idx)
+
+        is_red = (actions == Action.CHI_L_RED) | (actions == Action.CHI_M_RED) | (actions == Action.CHI_R_RED)
+
+        start = target_tt - chi_idx  # (B,)
+
+        # For each of the 3 tiles in the sequence, remove the two non-target tiles
+        for offset in range(3):
+            tile_to_remove = start + offset  # (B,)
+            is_target = (tile_to_remove == target_tt)  # (B,) — don't remove the claimed tile
+            need_remove = ~is_target
+
+            if need_remove.any():
+                rm_idx = torch.arange(B, device=device)[need_remove]
+                rm_tile = tile_to_remove[need_remove].clamp(0, 36)
+
+                # Red chi: check if we should remove red five instead of normal five
+                red_rm = is_red[need_remove] & torch.tensor(
+                    [Tile.is_tile_type_five(int(t.item())) for t in rm_tile],
+                    dtype=torch.bool, device=device)
+                if red_rm.any():
+                    red_idx_mask = torch.arange(rm_idx.shape[0], device=device)[red_rm]
+                    red_idx = rm_idx[red_idx_mask]
+                    red_tile = Tile.to_red_batch(rm_tile[red_idx_mask]).long()
+                    # Only use red if hand has red
+                    has_red = hands[red_idx, red_tile] > 0
+                    if has_red.any():
+                        hr_idx = red_idx[has_red]
+                        hr_tile = red_tile[has_red]
+                        hands[hr_idx, hr_tile] -= 1
+                        # Clear need_remove for these so we don't also remove normal
+                        # (we already removed red, skip the normal 5 below)
+                        # Use POSITION indices within the need_remove subset, not env indices
+                        skip_mask = torch.zeros(B, dtype=torch.bool, device=device)
+                        skip_mask[hr_idx] = True
+                        need_remove = need_remove & ~skip_mask
+
+                # Remove normal tile
+                if need_remove.any():
+                    nr_idx = torch.arange(B, device=device)[need_remove]
+                    nr_tile = tile_to_remove[need_remove].clamp(0, 36)
+                    hands[nr_idx, nr_tile] -= 1
+
+        return hands
+
+    @staticmethod
+    def open_kan_batch(hands, targets):
+        """Batch open kan hand mutation: remove 3 copies of target tile type.
+
+        hands: (B, 37) int8
+        targets: (B,) int — raw tile values (may include red five)
+        Returns: (B, 37) int8
+        """
+        B = hands.shape[0]
+        device = hands.device
+        hands = hands.clone()
+        target_tt = Tile.to_tile_type_tensor(targets).long()  # (B,) 0-33
+
+        for tt5 in (4, 13, 22):
+            is_target = target_tt == tt5
+            if is_target.any():
+                ti = torch.arange(B, device=device)[is_target]
+                red = Tile.to_red(tt5)
+                # If target is red: remove 3 normal (since we already counted the red)
+                is_red_tile = Tile.is_tile_red_batch(targets).to(torch.bool)
+                red_target_mask = is_target & is_red_tile
+                if red_target_mask.any():
+                    ri = torch.arange(B, device=device)[red_target_mask]
+                    hands[ri, tt5] -= 3
+                # If target is normal: prefer red if available
+                normal_target_mask = is_target & ~is_red_tile
+                if normal_target_mask.any():
+                    ni = torch.arange(B, device=device)[normal_target_mask]
+                    has_red = hands[ni, red] > 0
+                    if has_red.any():
+                        hri = ni[has_red]
+                        hands[hri, tt5] -= 2
+                        hands[hri, red] -= 1
+                    no_red = ~has_red
+                    if no_red.any():
+                        nri = ni[no_red]
+                        hands[nri, tt5] -= 3
+
+        # Non-five tiles: simple
+        is_five = torch.tensor([Tile.is_tile_type_five(int(t.item())) for t in target_tt],
+                              dtype=torch.bool, device=device)
+        non_five = ~is_five
+        if non_five.any():
+            ni = torch.arange(B, device=device)[non_five]
+            hands[ni, target_tt[non_five]] -= 3
+
+        return hands
+
+    @staticmethod
+    def closed_kan_batch(hands, tile_types):
+        """Batch closed kan hand mutation: remove 4 copies of tile_type.
+
+        hands: (B, 37) int8
+        tile_types: (B,) int — tile type 0-33 (already type, not raw tile)
+        Returns: (B, 37) int8
+        """
+        B = hands.shape[0]
+        device = hands.device
+        hands = hands.clone()
+        tt = tile_types.long()
+
+        for tt5 in (4, 13, 22):
+            is_target = tt == tt5
+            if is_target.any():
+                ti = torch.arange(B, device=device)[is_target]
+                red = Tile.to_red(tt5)
+                # Remove 1 red + 3 normal
+                hands[ti, red] -= 1
+                hands[ti, tt5] -= 3
+
+        non_five = ~torch.tensor([Tile.is_tile_type_five(int(t.item())) for t in tt],
+                                dtype=torch.bool, device=device)
+        if non_five.any():
+            ni = torch.arange(B, device=device)[non_five]
+            hands[ni, tt[non_five]] -= 4
+
+        return hands
+
+    @staticmethod
+    def added_kan_batch(hands, tile_types):
+        """Batch added kan hand mutation: remove 1 copy of tile_type (preferring red).
+
+        hands: (B, 37) int8
+        tile_types: (B,) int — tile type 0-33
+        Returns: (B, 37) int8
+        """
+        B = hands.shape[0]
+        device = hands.device
+        hands = hands.clone()
+        tt = tile_types.long()
+
+        for tt5 in (4, 13, 22):
+            is_target = tt == tt5
+            if is_target.any():
+                ti = torch.arange(B, device=device)[is_target]
+                red = Tile.to_red(tt5)
+                has_red = hands[ti, red] > 0
+                if has_red.any():
+                    hri = ti[has_red]
+                    hands[hri, red] -= 1
+                no_red = ~has_red
+                if no_red.any():
+                    nri = ti[no_red]
+                    hands[nri, tt5] -= 1
+
+        non_five = ~torch.tensor([Tile.is_tile_type_five(int(t.item())) for t in tt],
+                                dtype=torch.bool, device=device)
+        if non_five.any():
+            ni = torch.arange(B, device=device)[non_five]
+            hands[ni, tt[non_five]] -= 1
+
+        return hands
+
+    @staticmethod
     def to_34_batch(hands):
         """Vectorized: works on any shape (..., 37) → (..., 34)."""
         if hands.shape[-1] == Tile.NUM_TILE_TYPE:
@@ -417,25 +593,18 @@ class Hand:
         # 2. Seven pairs
         seven_p = (h34 == 2).sum(dim=1) == 7  # (B,)
 
-        # 3. Normal hand: base-5 encoding + cache lookup
+        # 3. Normal hand: base-5 encoding + cache lookup (SUITS ONLY, like single can_tsumo)
         POW9 = torch.tensor([5**8, 5**7, 5**6, 5**5, 5**4, 5**3, 5**2, 5**1, 5**0],
                             dtype=torch.int32, device=device)
         suits = h34[:, :27].reshape(B, 3, 9).to(torch.int32)  # (B, 3, 9)
         suit_codes = (suits * POW9).sum(dim=2)  # (B, 3)
 
-        POW7 = torch.tensor([5**6, 5**5, 5**4, 5**3, 5**2, 5**1, 5**0],
-                            dtype=torch.int32, device=device)
-        honors = h34[:, 27:34].to(torch.int32)  # (B, 7)
-        honor_codes = (honors * POW7).sum(dim=1) + 1953125  # (B,)
-
-        codes = torch.cat([suit_codes, honor_codes.unsqueeze(1)], dim=1)  # (B, 4)
-
-        # Batch cache lookup: (CACHE[code >> 5] >> (code & 31)) & 1
+        # Batch cache lookup: only 3 suit codes per hand (mirrors single can_tsumo)
         CACHE = Hand._get_cache(device)
-        cache_idx = (codes >> 5).long().clamp(0, CACHE.shape[0] - 1)  # (B, 4)
-        bit_idx = codes & 0b11111  # (B, 4)
-        cache_vals = CACHE[cache_idx]  # (B, 4)  fancy-index gather
-        valid_suits = ((cache_vals >> bit_idx) & 1).bool()  # (B, 4)
+        cache_idx = (suit_codes >> 5).long().clamp(0, CACHE.shape[0] - 1)  # (B, 3)
+        bit_idx = suit_codes & 0b11111  # (B, 3)
+        cache_vals = CACHE[cache_idx]  # (B, 3)  fancy-index gather
+        valid_suits = ((cache_vals >> bit_idx) & 1).bool()  # (B, 3)
 
         # Head count
         suit_sums = suits.sum(dim=2)  # (B, 3)
@@ -443,7 +612,7 @@ class Hand:
         heads_honors = (h34[:, 27:34] == 2).sum(dim=1)  # (B,)
         heads = heads_suits + heads_honors  # (B,)
 
-        # Honor constraint: no 1 or 4 copies
+        # Honor constraint: no 1 or 4 copies (mirrors single can_tsumo)
         honor_ok = ((h34[:, 27:34] != 1) & (h34[:, 27:34] != 4)).all(dim=1)  # (B,)
 
         normal = valid_suits.all(dim=1) & (heads == 1) & honor_ok  # (B,)
@@ -486,12 +655,12 @@ class Hand:
     def can_no_red_pon_batch_4p(hands, target_tts):
         """hands: (B, 4, 37), target_tts: (B,) → returns (B, 4) bool.
 
-        target_tts[b] is the tile-type of the discarded tile in env b (same for all 4 players).
+        Mirrors serial can_no_red_pon: for a 37-type hand, only counts
+        NORMAL (non-red) copies of the tile. Red fives are NOT counted.
         """
         B, P = hands.shape[0], hands.shape[1]
-        h34 = Hand.to_34_batch(hands)  # (B, 4, 34)
         idx = target_tts.view(B, 1, 1).expand(B, P, 1)  # (B, 4, 1)
-        counts = h34.gather(2, idx.long()).squeeze(2)  # (B, 4)
+        counts = hands.gather(2, idx.long()).squeeze(2)  # (B, 4) — 37-type counts
         return counts >= 2
 
     @staticmethod
@@ -550,7 +719,6 @@ class Hand:
             return result
 
         # Gather adjacent tile counts from the 37-type hand
-        # For each chi direction, gather the required tiles
         for chi_idx in range(3):
             col_base = chi_idx * 2  # 0=CHI_L, 2=CHI_M, 4=CHI_R
             if chi_idx == 0:  # left: need tt+1, tt+2
@@ -572,19 +740,33 @@ class Hand:
             has_t1 = hands.gather(2, idx1.long()).squeeze(2) > 0  # (B, 4)
             has_t2 = hands.gather(2, idx2.long()).squeeze(2) > 0  # (B, 4)
 
+            # Non-red chi: need both normal tiles
             base_ok = cond & src_mask & has_t1 & has_t2  # (B, 4)
             result[:, :, col_base] = base_ok  # non-red chi
 
-            # Red chi: additionally need red five in either t1 or t2 position
-            has_red = torch.zeros(B, P, dtype=torch.bool, device=device)
+            # Red chi: red five can substitute for a normal five
+            # Check if t1 or t2 is a five and hand has the corresponding red five
+            has_t1_red = has_t1.clone()
+            has_t2_red = has_t2.clone()
+            has_red_any = torch.zeros(B, P, dtype=torch.bool, device=device)
+
             for tt_check in (4, 13, 22):
                 red = Tile.to_red(tt_check)
-                # Check if tt_check matches t1 or t2
-                is_t1_target = (t1 == tt_check).unsqueeze(1)  # (B, 1)
-                is_t2_target = (t2 == tt_check).unsqueeze(1)  # (B, 1)
-                has_red = has_red | (is_t1_target & (hands[:, :, red] > 0))
-                has_red = has_red | (is_t2_target & (hands[:, :, red] > 0))
-            result[:, :, col_base + 1] = base_ok & has_red  # red chi
+                is_t1_five = (t1 == tt_check).unsqueeze(1)  # (B, 1)
+                is_t2_five = (t2 == tt_check).unsqueeze(1)  # (B, 1)
+                has_red_five = hands[:, :, red] > 0  # (B, P)
+
+                # t1 is a five: can use red five instead
+                has_t1_red = has_t1_red | (is_t1_five & has_red_five)
+                # t2 is a five: can use red five instead
+                has_t2_red = has_t2_red | (is_t2_five & has_red_five)
+
+                # Red chi also requires at least one red five actually used
+                has_red_any = has_red_any | (is_t1_five & has_red_five) | (is_t2_five & has_red_five)
+
+            # Red chi: cond & src_mask & (has t1 or red t1) & (has t2 or red t2) & at least one red used
+            red_ok = cond & src_mask & has_t1_red & has_t2_red & has_red_any  # (B, 4)
+            result[:, :, col_base + 1] = red_ok  # red chi
 
         return result  # (B, 4, 6)
 

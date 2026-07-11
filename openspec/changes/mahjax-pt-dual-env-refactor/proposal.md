@@ -56,20 +56,29 @@ env.py (兼容层) ──→ env_serial.py, env_parallel.py
 ```
 
 - **新增文件**:
-  - `mahjax_pt/red_mahjong/env_serial.py` — 纯串行环境 (~800 行)
-  - `mahjax_pt/red_mahjong/env_parallel.py` — 纯并行环境 (~1200 行)
-  - `mahjax_pt/red_mahjong/batch_state.py` — 批量化状态定义
-  - `mahjax_pt/tests/test_env_serial_compare.py` — 串行环境 JAX 对比测试
+  - `mahjax_pt/red_mahjong/env_serial.py` — 纯串行环境 (~1446 行)
+  - `mahjax_pt/red_mahjong/env_parallel.py` — 纯并行环境 (~2150 行, 全向量化 + GPU 支持, 805 seeds 100% 通过)
+  - `mahjax_pt/red_mahjong/batch_state.py` — 批量化状态定义 (~370 行)
+  - `mahjax_pt/tests/replay_pt_against_golden.py` — 串行环境 JAX 金数据回放验证
+  - `mahjax_pt/tests/replay_parallel_against_golden.py` — 并行环境 JAX 金数据回放验证（支持 -j 多进程）
   - `mahjax_pt/tests/test_env_parallel_parity.py` — 并行环境 vs 串行环境一致性测试
-  - `mahjax_pt/tests/test_env_parallel_perf.py` — 并行环境性能基准测试
+  - `mahjax_pt/tests/test_ppo_math_parity.py` — L1: PPO 数学原语 JAX/PT 对比 (Phase 11)
+  - `mahjax_pt/tests/test_ppo_gae_parity.py` — L2: GAE vs JAX calculate_gae (Phase 11)
+  - `mahjax_pt/tests/test_ppo_weight_transfer.py` — L3: ACNet 权重迁移显式映射 (Phase 11)
+  - `mahjax_pt/tests/test_ppo_update_parity.py` — L4: PPO loss/grad/param 对比 (Phase 11)
+  - `mahjax_pt/tests/test_ppo_acnet_parity.py` — L4 Ext: 完整 ACNet PPO loss 对比 (Phase 11)
+  - `mahjax_pt/tests/test_ppo_cycle_parity.py` — L5: 单次 update cycle (Phase 11)
+  - `mahjax_pt/tests/test_ppo_training_parity.py` — L6: 多步训练稳定性 (Phase 11)
 
 - **修改文件**:
   - `mahjax_pt/red_mahjong/env.py` — 改为兼容层，内部委托到 serial/parallel
-  - `mahjax_pt/examples/ppo_with_reg.py` — 适配新接口
+  - `mahjax_pt/red_mahjong/yaku.py` — GPU device-aware 常量 (`_get_cache`, `_FAN.to(device)` 等)
+  - `mahjax_pt/examples/ppo_with_reg.py` — 适配新接口 + Phase 11 GAE/approx_kl bug 修复
+  - `mahjax_pt/examples/networks/transformer.py` — LayerNorm eps=1e-6 对齐 JAX (Phase 11)
   - `mahjax_pt/red_mahjong/auto_reset_wrapper.py` — 适配两种环境
 
 - **不变文件**:
-  - `hand.py`, `meld.py`, `shanten.py`, `yaku.py`, `tile.py`, `state.py`, `action.py`, `constants.py`, `observation.py`, `players.py`
+  - `hand.py`, `meld.py`, `shanten.py`, `tile.py`, `state.py`, `action.py`, `constants.py`, `observation.py`, `players.py`
 
 ## Constraints
 

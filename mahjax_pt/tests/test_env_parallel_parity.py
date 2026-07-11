@@ -6,7 +6,6 @@ Verifies that the parallel batch env produces identical results
 to running B independent serial envs with the same seeds/actions.
 """
 import time, traceback, sys
-import numpy as np
 import torch
 
 from mahjax_pt.red_mahjong.env_serial import RedMahjongSerial
@@ -24,52 +23,6 @@ def ok(msg):
 
 def fail(msg):
     global FAIL; FAIL += 1; print(f"  [FAIL] {msg}")
-
-
-def compare_single_states(pt_s, batch_s, name=""):
-    """Compare an unstacked batch state with a directly-created serial state."""
-    for attr in ['current_player', 'step_count', 'terminated', 'truncated']:
-        v1 = getattr(pt_s, attr)
-        v2 = getattr(batch_s, attr)
-        if v1 != v2:
-            fail(f"{name}.{attr}: {v1} vs {v2}")
-            return False
-    ok(f"{name}: top-level fields match")
-    return True
-
-
-def compare_player_states(ps1, ps2, name=""):
-    """Compare two PlayerStateArrays."""
-    fields = ['hand', 'hand_with_red', 'meld_counts', 'melds', 'river',
-              'riichi', 'riichi_declared', 'discard_counts',
-              'furiten_by_discard', 'furiten_by_pass', 'is_hand_concealed',
-              'has_won', 'n_kan', 'has_yaku', 'ippatsu', 'double_riichi']
-    for f in fields:
-        v1 = getattr(ps1, f)
-        v2 = getattr(ps2, f)
-        if not torch.equal(v1, v2):
-            fail(f"{name}.players.{f}: not equal")
-            return False
-    ok(f"{name}: all player fields match")
-    return True
-
-
-def compare_round_states(rs1, rs2, name=""):
-    """Compare two RoundState objects."""
-    fields = ['round', 'honba', 'kyotaku', 'dealer', 'score',
-              'draw_next', 'target', 'last_draw', 'last_player',
-              'terminated_round', 'is_haitei', 'kan_declared',
-              'can_after_kan', 'is_abortive_draw_normal',
-              'dora_indicators', 'seat_wind', 'deck',
-              'next_deck_ix', 'last_deck_ix']
-    for f in fields:
-        v1 = getattr(rs1, f)
-        v2 = getattr(rs2, f)
-        if not torch.equal(v1, v2):
-            fail(f"{name}.round_state.{f}: not equal")
-            return False
-    ok(f"{name}: all round fields match")
-    return True
 
 
 # ═══════════════════════════════════════════════════════════════════

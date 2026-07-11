@@ -59,7 +59,7 @@
 
 ### SE-10: 其他动作
 - `_pass`: 过、设置振听被动、找下一个有行动的玩家
-- `_kyuushu`: 九种九牌流局
+- `_kyuushu`: 流局重开（JAX `_special_next_round`）— 同庄、honba+1、保留分数、重新洗牌发牌。不同于通常的 `terminated_round`
 - `_dummy`: 过渡局 dummy 步
 
 ### SE-11: 局管理
@@ -71,7 +71,10 @@
 
 ### SE-12: 合法动作 Mask 构建
 - 摸牌后 mask: 舍牌 (37 种) + 手摸切 + 暗杠/加杠 (34 种) + 自摸 + 立直 + 九种九牌
+- 九种九牌条件（JAX 对齐）：`enable_special_abortive_draw` ∧ `is_first_turn` ∧ `can_kyuushu` ∧ `meld_counts.sum() == 0`
 - 舍牌后 mask: 荣和 + 碰/吃/大明杠 + 过
+- 四開槓流れ（JAX 对齐）：`enable_special_abortive_draw & had_after_kan & n_kan>=4 & >=2 players have kan & no_ron` → 仅 KYUUSHU 可选
+- `is_abortive_draw_normal` 条件设置：仅当 `no_meld_player | (is_abort & no_ron_player)` 为真
 - 立直后 mask: 仅限听牌舍牌 + 不变向听的暗杠
 
 ### SE-13: 代码标注

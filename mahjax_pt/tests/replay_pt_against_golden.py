@@ -175,6 +175,11 @@ def replay_seed(seed, init_state, records, verbose=False):
         action = rec['action']
         golden = rec['state']
 
+        # KYUUSHU: inject JAX-generated deck so PRNG differences don't
+        # cause the redeal to diverge.
+        if action == 85:  # Action.KYUUSHU
+            penv._kyuushu_deck_override = golden['round_state.deck']
+
         state = penv.step(state, action)
 
         diffs = []

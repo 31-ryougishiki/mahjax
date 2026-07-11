@@ -97,6 +97,12 @@ class RedMahjong(Env):
     def observe(self, state):
         return self._impl.observe(state)
 
+    def observe_batch(self, batch_state):
+        """Batch observe — available when backend='parallel'."""
+        if hasattr(self._impl, 'observe_batch'):
+            return self._impl.observe_batch(batch_state)
+        raise NotImplementedError("observe_batch is only available with backend='parallel'")
+
     def step_batch(self, states, actions, profile=False):
         """Batch step — delegates to parallel backend's step_batch."""
         if hasattr(self._impl, 'step_batch'):
@@ -107,11 +113,18 @@ class RedMahjong(Env):
             result_states.append(self._impl.step(s, a))
         return result_states
 
-    def init_batch(self, keys=None, num_envs=None):
+    def init_batch(self, keys=None, num_envs=None, device=None):
         """Batch init — available when backend='parallel'."""
         if hasattr(self._impl, 'init_batch'):
-            return self._impl.init_batch(keys=keys, num_envs=num_envs)
+            return self._impl.init_batch(keys=keys, num_envs=num_envs, device=device)
         raise NotImplementedError("init_batch is only available with backend='parallel'")
+
+    def reinit_terminated_batch(self, batch_state, keys=None):
+        """Re-initialize terminated envs in a BatchState — parallel backend only."""
+        if hasattr(self._impl, 'reinit_terminated_batch'):
+            return self._impl.reinit_terminated_batch(batch_state, keys=keys)
+        raise NotImplementedError(
+            "reinit_terminated_batch is only available with backend='parallel'")
 
 
 def make(env_name="red_mahjong", backend="serial", **kwargs):

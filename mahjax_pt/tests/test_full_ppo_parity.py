@@ -149,7 +149,7 @@ with torch.no_grad():
         jv=jax_filt[i];js=jax_fsh[i];ps=tuple(pt_list[i].shape)
         try:
             if js==ps:pt_list[i].data.copy_(torch.from_numpy(jv));cp+=1
-            elif len(js)==3 and len(ps)==2:pt_list[i].data.copy_(torch.from_numpy(jv.reshape(ps)));rs+=1
+            elif len(js)==3 and len(ps)==2:pt_list[i].data.copy_(torch.from_numpy(jv.reshape(ps).T));rs+=1
             elif len(js)==2 and len(ps)==2 and js==ps[::-1]:pt_list[i].data.copy_(torch.from_numpy(jv.T));tr+=1
             else:fl+=1
         except:fl+=1
@@ -174,12 +174,55 @@ vd=float(np.abs(np.array(jv)-pv.numpy()).max())
 print(f"  Logit diff: {ld:.2e}  Value diff: {vd:.2e}")
 print(f"  {'[PASS] IDENTICAL' if ld<1e-5 and vd<1e-5 else '[WARN]' if ld<1e-3 else '[FAIL]'}")
 
+# ═══════════════════════════════ STEP 4: Gradient ═══════════════
+print(f"\n{'='*60}\nSTEP 4: Gradient verification\n{'='*60}")
+
+# Same dummy actions for cross-entropy
+jax_act=jnp.zeros(B,dtype=jnp.int32)
+pt_act=torch.zeros(B,dtype=torch.long)
+
+# JAX gradient
+def jax_loss_fn(p):
+    logits,_=jax_net.apply(p,jax_obs)
+    return optax.softmax_cross_entropy_with_integer_labels(logits,jax_act).mean()
+
+jax_grads_tree=jax.grad(jax_loss_fn)(jax_p)
+jax_grads_flat=flat(jax_grads_tree)
+
+# Apply same reorder + skip as weight copy
+jax_grads_filt=[]
+for ji in jax_order:
+    if not should_skip(ji):
+        jax_grads_filt.append(np.array(jax_grads_flat[ji]))
+
+# PyTorch gradient
+pt_net.train()
+pl2,_=pt_net(pt_obs)
+loss=F.cross_entropy(pl2,pt_act)
+pt_net.zero_grad()
+loss.backward()
+
+# Compare gradients (same [i] mapping as weight copy)
+grad_diffs=[]
+n_grad=0
+for i in range(len(pt_list)):
+    if i>=len(jax_grads_filt):break
+    jg=jax_grads_filt[i];pt_p=pt_list[i]
+    if pt_p.grad is None:continue
+    pg=pt_p.grad.detach().numpy();js=jg.shape;ps=pg.shape
+    if js==ps:d=np.abs(jg-pg).max()
+    elif len(js)==2 and js==ps[::-1]:d=np.abs(jg.T-pg).max()
+    elif jg.size==pg.size:d=np.abs(jg.reshape(-1)-pg.reshape(-1)).max()
+    else:d=999.0
+    grad_diffs.append(float(d));n_grad+=1
+
+max_gd=max(grad_diffs) if grad_diffs else 999.0
+mean_gd=np.mean(grad_diffs) if grad_diffs else 999.0
+print(f"  Compared {n_grad} params: max_grad_diff={max_gd:.2e}  mean_grad_diff={mean_gd:.2e}")
+print(f"  {'[PASS] IDENTICAL' if max_gd<1e-4 else '[WARN]' if max_gd<1e-3 else '[FAIL]'}")
+
 print(f"\n{'='*60}\nSUMMARY\n{'='*60}")
-print(f"  GAE:   [PASS] diff=0 (bit-identical)")
-print(f"  ACNet: {cp+tr+rs}/{len(pt_list)} weights copied ({fl} failed)")
-print(f"  Fwd:   [{'PASS' if ld<1e-5 else 'WARN'}] logit_diff={ld:.1e}  value_diff={vd:.1e}")
-import sys; sys.exit(0)  # stop here, rest is dead code
-print(f"  GAE:   [PASS] diff=0 (bit-identical)")
-print(f"  GAE:   [PASS] diff=0 (bit-identical)")
-print(f"  ACNet: {cp+tr+rs}/{len(pt_list)} weights copied ({fl} failed)")
-print(f"  Fwd:   [{'PASS' if ld<1e-5 else 'WARN'}] logit_diff={ld:.1e}  value_diff={vd:.1e}")
+print(f"  GAE:      [PASS] diff=0 (bit-identical)")
+print(f"  ACNet:    {cp+tr+rs}/{len(pt_list)} weights copied ({fl} failed)")
+print(f"  Fwd:      [{'PASS' if ld<1e-5 else 'WARN'}] logit_diff={ld:.1e}  value_diff={vd:.1e}")
+print(f"  Gradient: [{'PASS' if max_gd<1e-4 else 'WARN'}] max_diff={max_gd:.1e}  mean_diff={mean_gd:.1e}")

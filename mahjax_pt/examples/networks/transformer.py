@@ -78,9 +78,9 @@ class TransformerBlock(nn.Module):
 
     def __init__(self, features, num_heads, mlp_dim):
         super().__init__()
-        self.ln1 = nn.LayerNorm(features)
+        self.ln1 = nn.LayerNorm(features, eps=1e-6)
         self.attn = MultiHeadSelfAttention(features, num_heads)
-        self.ln2 = nn.LayerNorm(features)
+        self.ln2 = nn.LayerNorm(features, eps=1e-6)
         self.mlp = nn.Sequential(
             nn.Linear(features, mlp_dim),
             nn.ReLU(),

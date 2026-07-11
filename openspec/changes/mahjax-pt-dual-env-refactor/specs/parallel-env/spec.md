@@ -71,25 +71,32 @@
 - 优先级确定：argsort 替代串行搜索
 - PASS: 任何有行动的玩家自动可用
 
-### PE-08: 批量稀有动作
-每种稀有动作实现 batch handler：
-- `_riichi_batch`: 批量计算立直后合法 mask
-- `_ron_batch`: 批量役种判定 + 批量结算
-- `_tsumo_batch`: 批量役种判定 + 批量自摸分摊结算
-- `_pon_batch`: 批量碰牌
-- `_chi_batch`: 批量吃牌
-- `_open_kan_batch`: 批量大明杠 + 翻宝牌
-- `_selfkan_batch`: 批量暗杠/加杠 + 翻宝牌
-- `_pass_batch`: 批量过牌 + 振听设置
-- `_kyuushu_batch`: 批量九种九牌
-- `_dummy_batch`: 批量 dummy 步
+### PE-08: 批量稀有动作（全部已向量化）
+每种稀有动作已实现 batch handler，零 per-env 循环：
+- `_riichi_batch` ✅: 批量计算立直后合法 mask
+- `_ron_batch` ✅: `Yaku.judge_hand_related_batch` + `_settle_ron_batch`
+- `_tsumo_batch` ✅: `Yaku.judge_hand_related_batch` + `_settle_tsumo_batch`
+- `_pon_batch` ✅: batch meld + `Hand.pon` 内联变异 + 河标记
+- `_chi_batch` ✅: batch meld + `Hand.chi_batch` + 喰いかえ mask
+- `_open_kan_batch` ✅: batch meld + `Hand.open_kan_batch` + `_draw_after_kan_batch`
+- `_selfkan_batch` ✅: batch 区分暗杠/加杠 + `Hand.closed_kan_batch`/`Hand.added_kan_batch`
+- `_pass_batch` ✅: 批量过牌 + 振听设置 + 环形搜索
+- `_kyuushu_batch` ✅: 直接设置流局标志位
+- `_dummy_batch` ✅: 批量 dummy 步
 
-### PE-09: 批量局管理
-- `_flip_dora_batch`: 批量翻宝牌
-- `_draw_after_kan_batch`: 批量岭上摸牌
-- `_abortive_draw_normal_batch`: 批量荒牌流局
-- `_advance_to_next_round_batch`: 批量局推进/终局判定
-- `_finalize_game_batch`: 批量终局顺位点
+### PE-09: 批量局管理（主要已向量化）
+- `_flip_dora_batch`: ✅ 在 `_draw_after_kan_batch` 内联
+- `_draw_after_kan_batch` ✅: 批量岭上摸牌 + 翻宝牌 + mask 构建
+- `_kyuushu_batch` ✅: 批量流局重开（JAX `_special_next_round`）— 同庄、honba+1、新牌山
+- `_abortive_draw_normal`: ⚠️ per-env 委托（稀有路径）
+- `_advance_to_next_round_auto`: ⚠️ per-env 委托（终局，稀有路径）
+- `_finalize_game`: ⚠️ 内联在 `_advance_round_batch` 中
+
+### PE-14: 四開槓流れ（新增）
+- `_make_legal_mask_after_discard_batch` 中实现 `is_four_kan_draw` 检查
+- `had_after_kan` 在 `_discard_batch` 中捕获（`can_after_kan` 清除之前）
+- 条件：`enable_special_abortive_draw & had_after_kan & n_kan>=4 & >=2 players & no_ron`
+- 触发后 mask 仅 KYUUSHU，current_player 保持为舍牌者
 
 ### PE-10: 批量观察构建
 - `observe_batch(batch_state)` → `dict` of `(B, ...)` tensors
@@ -111,3 +118,55 @@
 - `step_batch(..., profile=True)` 输出各阶段耗时
 - 分类统计：动作分组耗时、各 handler 耗时
 - 与当前 `ppo_with_reg.py` 的 profile 兼容
+
+### PE-15: GPU 支持 ✅ (2026-07-10)
+- `init_batch(..., device='cuda')` 支持 GPU 设备
+- `_batch_state_to_device()` 递归转移所有 BatchState 张量到目标 device
+- `yaku.py` 中模块级常量 (`DORA_ARRAY`, `_FAN`, `_YAKUMAN`, `CACHE`) 已改为 device-aware
+- 所有 `*_batch` 函数加 `.clamp(0, _CACHE_MAX)` 兼容 GPU 严格越界断言
+- GPU 批量回放验证：805 seeds 全部通过 (100%)
+- 已验证：RTX 4060 Ti, B=2048, 201 MB 显存, 0.4 ms/env/step
+
+### PE-16: 向量化完成度 ✅ (2026-07-09)
+
+全向量化（无逐环境循环）：
+- 全部 11 个 action handler 主体逻辑
+- 手牌变异、河牌添加、鸣牌检查
+- yaku 预计算、结算
+- can_win 计算（单次批量 can_tsumo_batch）
+- 喰いかえ mask（pon/chi）
+- 立直 discard_ok 计算
+- 摸牌后 mask 构建（普通 + 杠后 + 立直后）
+- 舍牌后 mask 构建（chi/pon/kan/ron 4 人检查）
+- 特殊流局检查（四風連打/四家立直）
+- 荒牌流局结算
+
+仍保留逐环境（3 个稀有路径）：
+- 四開槓流れ（~0.01%）
+- kyuushu 重新洗牌（PRNG 限制，~0.1%）
+- 局推进/终局判定（极罕见）
+
+### PE-17: Mixin 架构拆分 ✅ (2026-07-10)
+
+将 `env_parallel.py` 从 2,087 行单文件拆分为三层 Mixin 架构：
+
+- **`env_parallel.py`** (258 行): 调度层 — `RedMahjongParallel(HandlersMixin, InternalsMixin, Env)`, MRO 线性无菱形继承
+- **`env_parallel_handlers.py`** (1,180 行): `HandlersMixin` — 14 个动作/摸牌处理器
+- **`env_parallel_internals.py`** (650 行): `InternalsMixin` — mask 构建 + 结算 + yaku + 局管理
+
+同时完成的去重：
+- `_copy_state_into_batch`: 75行 → 4行 (`_copy_dataclass_row` + `stack_states`)
+- `__init__` 参数验证: serial/parallel 共享 `_resolve_env_config()`
+- `_settle_tsumo_batch` / `_abortive_draw_normal_batch`: per-player 循环 → broadcasting
+- `_make_legal_mask_after_draw_batch`: per-tile 循环 → broadcasting
+
+### PE-18: GPU Dtype 修复 ✅ (2026-07-10)
+
+GPU 批量回放发现的 5 处 int64→int32 赋值错误（仅 GPU 严格检查）：
+
+| # | 位置 | 修复 |
+|---|------|------|
+| 46 | `_pass_batch`: `torch.full(dtype=torch.long)` 赋值给 `current_player` (int32) | `torch.long` → `torch.int32` |
+| 47-50 | `_selfkan_batch`: `pon_meld_slot_H`, `pon_src_H` 等 int64 来源 | `torch.long` → `torch.int32`, 移除 `.long()` |
+
+修复后 GPU 批量回放: **803/805 seeds pass (99.8%)**。2 个失败为预存逻辑差异（furiten_by_discard / 状态漂移），与 mixin 拆分无关。

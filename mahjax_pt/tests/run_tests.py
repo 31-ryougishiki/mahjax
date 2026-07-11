@@ -11,7 +11,13 @@ import sys, os, time, argparse, traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from mahjax_pt.tests.test_cases import ALL_TESTS
+from mahjax_pt.tests.test_cases import ALL_TESTS as ALL_UNIT_TESTS
+from mahjax_pt.tests.test_env_branches import ALL_TESTS as ALL_BRANCH_TESTS
+
+# Merge all test registries
+ALL_TESTS = {}
+ALL_TESTS.update(ALL_UNIT_TESTS)
+ALL_TESTS.update(ALL_BRANCH_TESTS)
 
 
 def run_one_test(name, info, fn):

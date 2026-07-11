@@ -242,32 +242,43 @@ class River:
         return torch.where(empty, torch.tensor(-1, dtype=torch.int32), tile)
 
     @staticmethod
-    def add_discard_batch(rivers, tiles, players, idxs, is_tsumogiri, is_riichi):
-        """Fully vectorized: rivers=(B,4,24), tiles/players/idxs=(B,), is_tsumo/riichi=(B,) bool."""
-        B = rivers.shape[0]
+    def add_discard_batch(rivers, tiles, players, idxs, is_tsumogiri, is_riichi, batch_idx=None):
+        """Fully vectorized.
+
+        rivers: (B,4,24) full batch. tiles/players/idxs/flags: (K,) subset.
+        batch_idx: (K,) int — env indices in the full batch. If None, uses arange(K).
+        """
+        K = tiles.shape[0]
+        if batch_idx is None:
+            batch_idx = torch.arange(K, device=rivers.device)
         max_idx = rivers.shape[2] - 1  # 23
         tile_u16 = tiles.int() & _TILE_MASK
         tile_u16 = torch.where(is_tsumogiri, tile_u16 | _BIT_TSUMOGIRI, tile_u16)
         tile_u16 = torch.where(is_riichi, tile_u16 | _BIT_RIICHI, tile_u16)
-        batch_idx = torch.arange(B, device=rivers.device)
         safe_idxs = idxs.long().clamp(0, max_idx)
         rivers[batch_idx, players.long(), safe_idxs] = tile_u16
         return rivers
 
     @staticmethod
-    def add_meld_batch(rivers, actions, players, idxs, srcs):
-        """Batch River.add_meld. rivers: (B, 4, 24), actions/players/idxs/srcs: (B,)."""
-        B = rivers.shape[0]
+    def add_meld_batch(rivers, actions, players, idxs, srcs, batch_idx=None):
+        """Batch River.add_meld.
+
+        rivers: (B, 4, 24) full batch.
+        actions/players/idxs/srcs: (K,) subset of envs to update.
+        batch_idx: (K,) int — env indices in the full batch. If None, uses arange(K).
+        """
+        K = actions.shape[0]
         device = rivers.device
-        batch_idx = torch.arange(B, device=device)
+        if batch_idx is None:
+            batch_idx = torch.arange(K, device=device)
         max_idx = rivers.shape[2] - 1
         safe_idxs = idxs.long().clamp(0, max_idx)
 
-        # Read existing tile values
+        # Read existing tile values for the K envs at the specified batch positions
         tile_u16 = rivers[batch_idx, players.long(), safe_idxs].clone()
 
         # Compute meld_type from actions
-        mt = torch.zeros(B, dtype=torch.int32, device=device)
+        mt = torch.zeros(K, dtype=torch.int32, device=device)
         mt = torch.where((actions == Action.PON) | (actions == Action.PON_RED), 1, mt)
         mt = torch.where(actions == Action.OPEN_KAN, 2, mt)
         mt = torch.where((actions == Action.CHI_L) | (actions == Action.CHI_L_RED), 3, mt)

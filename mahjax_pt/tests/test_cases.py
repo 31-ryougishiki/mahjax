@@ -164,6 +164,22 @@ def _make_hand_34(counts_34):
     return h
 
 
+def hand_34(counts_dict):
+    """Create a 34-dim hand tensor from {tile_type: count} dict (sparse-friendly)."""
+    h = torch.zeros(34, dtype=torch.int8)
+    for t, c in counts_dict.items():
+        h[t] = c
+    return h
+
+
+def hand_37(counts_dict):
+    """Create a 37-dim hand tensor from {tile_idx: count} dict (sparse-friendly)."""
+    h = torch.zeros(37, dtype=torch.int8)
+    for t, c in counts_dict.items():
+        h[t] = c
+    return h
+
+
 def test_hand_pon():
     """H04-H05: Pon detection."""
     # H04: normal pon

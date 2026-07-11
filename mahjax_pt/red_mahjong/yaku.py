@@ -383,34 +383,45 @@ class Yaku:
 
     # ── Batch cache extractors ──
     # CACHE[code] → (3,) packed int. codes: (B,) → cached: (B, 3).
+    # Device-aware: lazily caches per-device copies of CACHE for GPU support.
+    # Max valid code is 4 * (5^8 + 5^7 + ... + 5^0) = 1953124
+
+    _device_caches = {}
+    _CACHE_MAX = 1953124  # max valid base-5 suit code
+
+    @classmethod
+    def _get_cache(cls, device):
+        if device not in cls._device_caches:
+            cls._device_caches[device] = cls.CACHE.to(device)
+        return cls._device_caches[device]
 
     @staticmethod
     def head_batch(codes):
-        return Yaku.CACHE[codes] & 0b1111
+        return Yaku._get_cache(codes.device)[codes.clamp(0, Yaku._CACHE_MAX)] & 0b1111
 
     @staticmethod
     def chow_batch(codes):
-        return (Yaku.CACHE[codes] >> 4) & 0b1111111
+        return (Yaku._get_cache(codes.device)[codes.clamp(0, Yaku._CACHE_MAX)] >> 4) & 0b1111111
 
     @staticmethod
     def pung_batch(codes):
-        return (Yaku.CACHE[codes] >> 11) & 0b111111111
+        return (Yaku._get_cache(codes.device)[codes.clamp(0, Yaku._CACHE_MAX)] >> 11) & 0b111111111
 
     @staticmethod
     def n_pung_batch(codes):
-        return (Yaku.CACHE[codes] >> 20) & 0b111
+        return (Yaku._get_cache(codes.device)[codes.clamp(0, Yaku._CACHE_MAX)] >> 20) & 0b111
 
     @staticmethod
     def n_double_chow_batch(codes):
-        return (Yaku.CACHE[codes] >> 23) & 0b11
+        return (Yaku._get_cache(codes.device)[codes.clamp(0, Yaku._CACHE_MAX)] >> 23) & 0b11
 
     @staticmethod
     def outside_batch(codes):
-        return (Yaku.CACHE[codes] >> 25) & 1
+        return (Yaku._get_cache(codes.device)[codes.clamp(0, Yaku._CACHE_MAX)] >> 25) & 1
 
     @staticmethod
     def nine_gates_batch(codes):
-        return Yaku.CACHE[codes] >> 26
+        return Yaku._get_cache(codes.device)[codes.clamp(0, Yaku._CACHE_MAX)] >> 26
 
     # ── Batch pattern update (one suit, B envs) ──
 
@@ -532,12 +543,13 @@ class Yaku:
 
         # ── 3. Dora ──
         dora = torch.zeros(B, 2, 34, dtype=torch.int8, device=device)
+        DORA_DEV = DORA_ARRAY.to(device)
         for k in range(5):  # up to 5 dora indicators
             di = dora_indicators[:, k]  # (B,)
             valid = di != -1
             if valid.any():
                 dt = Tile.to_tile_type_tensor(torch.where(valid, di, torch.zeros_like(di)))
-                dora_idx = DORA_ARRAY[dt.long()]  # (B,)
+                dora_idx = DORA_DEV[dt.long()]  # (B,)
                 # Scatter: dora[b, 0, dora_idx[b]] += 1
                 valid_idx = b_idx[valid]
                 dora[valid_idx, 0, dora_idx[valid_idx].long()] += 1
@@ -546,7 +558,7 @@ class Yaku:
             valid_u = udi != -1
             if valid_u.any():
                 dt_u = Tile.to_tile_type_tensor(torch.where(valid_u, udi, torch.zeros_like(udi)))
-                dora_idx_u = DORA_ARRAY[dt_u.long()]
+                dora_idx_u = DORA_DEV[dt_u.long()]
                 valid_u_idx = b_idx[valid_u]
                 dora[valid_u_idx, 1, dora_idx_u[valid_u_idx].long()] += 1
 
@@ -733,8 +745,9 @@ class Yaku:
         yaku[:, YI.ThreeKans] = n_kan.unsqueeze(1).expand(B, 3) == 3
 
         # ── 11. Pick best pattern ──
-        fan_open = _FAN[0].unsqueeze(0)  # (1, 52)
-        fan_conc = _FAN[1].unsqueeze(0)  # (1, 52)
+        FAN_DEV = _FAN.to(device)
+        fan_open = FAN_DEV[0].unsqueeze(0)  # (1, 52)
+        fan_conc = FAN_DEV[1].unsqueeze(0)  # (1, 52)
         fan_selected = torch.where(is_hand_concealed.unsqueeze(1), fan_conc, fan_open)  # (B, 52)
 
         pattern_score = torch.zeros(B, 3, dtype=torch.int32, device=device)
@@ -794,7 +807,7 @@ class Yaku:
         yakuman[:, YI.CompletedFourConcealedPons] = four_concealed_single
         yakuman[:, YI.FourKans] = n_kan == 4
 
-        yakuman_num = (yakuman.to(torch.int32) @ _YAKUMAN).to(torch.int32)  # (B,)
+        yakuman_num = (yakuman.float() @ _YAKUMAN.to(device).float()).to(torch.int32)  # (B,)
 
         has_yakuman = yakuman.any(dim=1)  # (B,)
         if has_yakuman.any():

@@ -254,39 +254,65 @@ ppo_with_reg.py
 
 ## Verification Strategy
 
-### 1. 串行 vs JAX 逐函数对比
-- 相同随机种子，单步执行
-- 比较每次 step 后的状态字段（hand, river, meld, score 等）
-- 比较 legal_action_mask 的等价性
-- 比较 reward 的等价性
+详细的测试方法、脚本清单、金数据工具链、并行执行模式、覆盖率矩阵和回归种子策略见 [tasks.md § 测试方法](tasks.md#测试方法)。以下为架构层面的验证策略摘要：
 
-### 2. 并行 vs 串行 等价性
-- 相同随机种子初始化 B 个环境
-- 并行 step_batch 结果 vs 逐环境串行 step 结果
-- 全字段 exact match (float 允许 1e-5 误差)
+### 四层验证金字塔
 
-### 3. 性能基准
-- 串行：单环境 throughput (steps/sec)
-- 并行：batch=128 环境下 throughput 和 GPU 利用率
-- 对比混合实现 vs 纯并行实现的加速比
+| 层级 | 目标 | 关键测试 |
+|------|------|---------|
+| L1 基础单元 | 纯 PT 逻辑正确性 | `test_cases.py` — 16 组 80 断言 |
+| L2 框架一致性 | JAX ↔ PyTorch 数值等价 | `test_exact_parity.py`, `test_full_ppo_parity.py`, `test_mha_definitive.py` |
+| L3 环境集成 | Serial↔Parallel 等价 + 关键分支 | `test_env_parallel_parity.py`, `test_env_branches.py` |
+| L4 金数据回放 | 完整对局 vs JAX 逐 step 一致 | `replay_pt_against_golden.py`, `replay_parallel_against_golden.py` — 805 seeds 100% 通过 |
+
+### 核心验证原则
+
+1. **串行 vs JAX 逐函数对比**：相同随机种子，单步执行，比较每次 step 后的状态字段（hand, river, meld, score, legal_action_mask, rewards 等）
+2. **并行 vs 串行等价性**：相同随机种子初始化 B 个环境，并行 step_batch 结果 vs 逐环境串行 step 结果，全字段 exact match (float 允许 1e-5 误差)
+
+性能基准、GPU 兼容性、批量回放验证详情见 [tasks.md § 测试方法](tasks.md#测试方法)。
 
 ## File Structure After Refactor
 
 ```
 mahjax_pt/red_mahjong/
-├── env.py                  # 兼容层 (Facade, ~80 行)
-├── env_serial.py           # 纯串行环境 (~800 行, 新增)
-├── env_parallel.py         # 纯并行环境 (~1200 行, 新增)
-├── batch_state.py          # 批量化状态定义 (~150 行, 新增)
-├── state.py                # EnvState, PlayerStateArrays, RoundState (不变)
-├── hand.py                 # 手牌操作 (不变, 已有 batch 版本)
-├── meld.py                 # 面子编码 (不变)
-├── shanten.py              # 向听计算 (不变, 已有 batch 版本)
-├── yaku.py                 # 役种判定 (不变)
-├── tile.py                 # 牌面操作 (不变, 已有 batch 版本)
-├── action.py               # 动作常量 (不变)
-├── constants.py            # 常量 (不变)
-├── observation.py          # 观察构建 (不变, 已有 batch 版本)
-├── players.py              # 玩家策略 (不变)
-└── auto_reset_wrapper.py   # 自动重置 (需适配)
+├── env.py                      # 兼容层 (Facade, 127 行)
+├── env_serial.py               # 纯串行环境 (~1,554 行, 参考实现)
+├── env_parallel.py             # 调度层 (258 行) — RedMahjongParallel orchestrator
+├── env_parallel_handlers.py    # 动作处理器 Mixin (1,180 行) — 11 action handlers
+├── env_parallel_internals.py   # Mask/结算/Yaku Mixin (650 行) — 内部机制
+├── batch_state.py              # 批量化状态定义 (369 行)
+├── state.py                    # EnvState, PlayerStateArrays, RoundState (不变)
+├── hand.py                     # 手牌操作 (chi_batch/open_kan_batch/closed_kan_batch 等)
+├── meld.py                     # 面子编码 (已有 batch 版本)
+├── shanten.py                  # 向听计算 (已有 batch 版本)
+├── yaku.py                     # 役种判定 (judge_hand_related_batch, GPU device-aware 常量)
+├── tile.py                     # 牌面操作 (已有 batch 版本)
+├── action.py                   # 动作常量 (不变)
+├── constants.py                # 常量 (不变)
+├── observation.py              # 观察构建 (不变)
+├── players.py                  # 玩家策略 (不变)
+└── auto_reset_wrapper.py       # 自动重置 (不变)
+```
+
+### Architecture (Mixin Split)
+
+```
+RedMahjongParallel(HandlersMixin, InternalsMixin, Env)
+  │
+  ├── env_parallel.py (258 lines)
+  │   └── Orchestrator: __init__, init_batch, step_batch, _step_batch_bs
+  │
+  ├── env_parallel_handlers.py (1,180 lines)
+  │   └── HandlersMixin: _discard_batch, _pon_batch, _chi_batch,
+  │       _selfkan_batch, _open_kan_batch, _ron_batch, _tsumo_batch,
+  │       _riichi_batch, _pass_batch, _kyuushu_batch, _dummy_batch,
+  │       _accept_riichi_batch, _draw_batch, _draw_after_kan_batch
+  │
+  └── env_parallel_internals.py (650 lines)
+      └── InternalsMixin: _make_legal_mask_after_discard_batch,
+          _make_legal_mask_after_draw_batch, _precompute_yaku_batch,
+          _settle_ron_batch, _settle_tsumo_batch,
+          _abortive_draw_normal_batch, _advance_round_batch,
+          _copy_state_into_batch, _score_batch
 ```

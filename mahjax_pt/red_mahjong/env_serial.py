@@ -59,6 +59,32 @@ def _resolve_game_config(game_config=None):
     return default_game_config() if game_config is None else game_config
 
 
+def _resolve_env_config(round_mode, observe_type, next_round_style, order_points, game_config):
+    """Validate and resolve environment configuration.
+
+    Shared by RedMahjongSerial and RedMahjongParallel to avoid duplicating
+    validation logic and attribute initialization.
+
+    Returns a dict of resolved config values suitable for ``self.__dict__.update()``.
+    """
+    if round_mode not in ("single", "east", "half"):
+        raise ValueError(f"round_mode must be 'single', 'east', or 'half', got: {round_mode}")
+    if observe_type == "2D":
+        raise ValueError("observe_type '2D' is not yet implemented")
+    if next_round_style not in ("auto", "dummy_share"):
+        raise ValueError(f"next_round_style must be 'auto' or 'dummy_share', got: {next_round_style}")
+
+    return {
+        'round_mode': round_mode,
+        'one_round': round_mode == "single",
+        'round_limit': 4 if round_mode == "east" else 8,
+        'observe_type': observe_type,
+        'next_round_style': next_round_style,
+        'order_points': order_points,
+        'game_config': _resolve_game_config(game_config),
+    }
+
+
 def _live_wall_end_ix(state):
     return int(state.round_state.last_deck_ix)
 
@@ -89,7 +115,11 @@ def _special_abortive_draw_mask():
 
 
 def _trigger_special_abortive_draw(state):
-    state.legal_action_mask = _special_abortive_draw_mask()
+    """JAX _trigger_special_abortive_draw: set per-player mask (all KYUUSHU),
+    then derive env-level mask from current player's row."""
+    mask_4p = _special_abortive_draw_mask()  # (4, 87)
+    state.players.legal_action_mask = mask_4p
+    state.legal_action_mask = mask_4p[state.current_player]  # (87,)
     state.round_state.draw_next = False
     state.round_state.kan_declared = False
     state.round_state.is_abortive_draw_normal = False
@@ -207,20 +237,8 @@ class RedMahjongSerial(Env):
         game_config: Optional[GameConfig] = None,
         next_round_style: Literal["auto", "dummy_share"] = "auto",
     ):
-        if round_mode not in ("single", "east", "half"):
-            raise ValueError(f"round_mode must be 'single', 'east', or 'half', got: {round_mode}")
-        if observe_type == "2D":
-            raise ValueError("observe_type '2D' is not yet implemented")
-        if next_round_style not in ("auto", "dummy_share"):
-            raise ValueError(f"next_round_style must be 'auto' or 'dummy_share', got: {next_round_style}")
-
-        self.round_mode = round_mode
-        self.one_round = round_mode == "single"
-        self.round_limit = 4 if round_mode == "east" else 8
-        self.observe_type = observe_type
-        self.next_round_style = next_round_style
-        self.order_points = order_points
-        self.game_config = _resolve_game_config(game_config)
+        self.__dict__.update(_resolve_env_config(
+            round_mode, observe_type, next_round_style, order_points, game_config))
 
     # ── properties ──
     @property
@@ -391,7 +409,9 @@ class RedMahjongSerial(Env):
             if profile: _t['pass'] = _time.time() - _t0
         elif action == Action.KYUUSHU:
             if profile: _t0 = _time.time()
-            state = self._kyuushu(state)
+            deck_override = getattr(self, '_kyuushu_deck_override', None)
+            state = self._kyuushu(state, deck_override=deck_override)
+            self._kyuushu_deck_override = None  # consume once
             if profile: _t['kyuushu'] = _time.time() - _t0
         elif action == Action.DUMMY:
             if profile: _t0 = _time.time()
@@ -583,8 +603,11 @@ class RedMahjongSerial(Env):
             and Hand.can_riichi(hand)):
             mask[Action.RIICHI] = True
 
-        # Kyuushu on first turn
-        if _is_first_turn(state.round_state.next_deck_ix) and Hand.can_kyuushu(hand):
+        # Kyuushu on first turn (matches JAX: requires no melds from any player)
+        if (self.game_config.enable_special_abortive_draw
+            and _is_first_turn(state.round_state.next_deck_ix)
+            and Hand.can_kyuushu(hand)
+            and int(state.players.meld_counts.sum().item()) == 0):
             mask[Action.KYUUSHU] = True
 
         return mask
@@ -685,7 +708,7 @@ class RedMahjongSerial(Env):
         is_furiten = False
         for ri in range(int(state.players.discard_counts[cp].item())):
             rt = int(river_tiles[ri].item())
-            if rt >= 0 and rt < 34 and _is_waiting_tile(can_ron, rt):
+            if rt >= 0 and rt <= 36 and _is_waiting_tile(can_ron, rt):
                 is_furiten = True
                 break
         # JAX SETS (not ORs) — recomputes from full river every time
@@ -697,6 +720,9 @@ class RedMahjongSerial(Env):
         state.players.can_win[cp] = can_ron
 
         # Clear per-discard flags (JAX _discard L965-966, L990, L1020)
+        # NOTE: had_after_kan must be captured BEFORE clearing can_after_kan
+        # (JAX captures it at top of _discard for is_four_kan_draw check)
+        had_after_kan = state.round_state.can_after_kan
         state.round_state.last_draw = -1
         state.players.ippatsu[cp] = False
         state.round_state.can_after_kan = False
@@ -706,25 +732,23 @@ class RedMahjongSerial(Env):
         state.round_state.target = tile
         state.round_state.last_player = cp
 
-        # JAX: is_haitei = is_haitei | is_abortive_draw_normal
+        # JAX: is_haitei = is_haitei | is_abortive_draw_normal (L1020-1022)
+        # is_abortive_draw_normal is set CONDITIONALLY later in _make_legal_action_mask_after_discard
         if state.round_state.next_deck_ix < state.round_state.last_deck_ix:
-            state.round_state.is_abortive_draw_normal = True
             state.round_state.is_haitei = True
-        elif state.round_state.is_haitei:
-            state.round_state.is_abortive_draw_normal = True
 
         # Precompute yaku for all 4 players (matches JAX
         # yaku_judge_for_discarded_or_kanned_tile_and_next_draw_tile).
         # col 0 = RON on discarded tile, col 1 = TSUMO on next deck tile.
         self._precompute_yaku(state, tile)
 
-        state = self._make_legal_action_mask_after_discard(state)
+        state = self._make_legal_action_mask_after_discard(state, had_after_kan)
         return state
 
     # ── _make_legal_action_mask_after_discard ──
     # JAX: lines 1053-1164
 
-    def _make_legal_action_mask_after_discard(self, state):
+    def _make_legal_action_mask_after_discard(self, state, had_after_kan=False):
         """After a discard, set per-player legal action masks for ron/meld (matches JAX)."""
         cp = state.current_player
         discarded_player = cp
@@ -789,14 +813,35 @@ class RedMahjongSerial(Env):
 
         can_any = can_ron_vec | can_pon_vec | can_open_kan_vec | can_chi_vec
         no_meld_player = not can_any.any().item()
+        no_ron_player = not can_ron_vec.any().item()
 
-        if no_meld_player:
+        # JAX L1003-1008: is_four_kan_draw (四開槓流れ)
+        is_four_kan_draw = (
+            self.game_config.enable_special_abortive_draw
+            and had_after_kan
+            and int(state.players.n_kan.sum().item()) >= 4
+            and int((state.players.n_kan > 0).sum().item()) >= 2
+            and no_ron_player
+        )
+        if is_four_kan_draw:
+            state = _trigger_special_abortive_draw(state)
+
+        # JAX L1017: is_abortive_draw_normal = next_deck_ix < last_deck_ix
+        is_abort = (int(state.round_state.next_deck_ix) < int(state.round_state.last_deck_ix))
+        # JAX L1029: no_meld_player | (is_abortive_draw_normal & no_ron_player)
+        go_to_draw = no_meld_player or (is_abort and no_ron_player)
+
+        if is_four_kan_draw:
+            # Already handled above — skip normal flow
+            pass
+        elif go_to_draw:
             state.current_player = (discarded_player + 1) % 4
             state.round_state.target = -1
             state.round_state.draw_next = True
             state.round_state.last_player = discarded_player
-            if int(state.round_state.next_deck_ix) < int(state.round_state.last_deck_ix):
-                state.round_state.is_abortive_draw_normal = True
+            # JAX L1035: is_abortive_draw_normal is set conditionally here
+            state.round_state.is_abortive_draw_normal = is_abort
+            if is_abort:
                 state = self._abortive_draw_normal(state)
             else:
                 state = self._draw(state)
@@ -888,12 +933,15 @@ class RedMahjongSerial(Env):
     # JAX: _tsumo lines 1800-1880
 
     def _tsumo(self, state):
-        """Handle a TSUMO (self-draw win) action."""
+        """Handle a TSUMO (self-draw win) action.
+
+        Uses precomputed fan/fu (col 1 = TSUMO) instead of calling Yaku.judge,
+        because the drawn tile is already in the hand (added by _draw) and
+        Yaku.judge would add it again via Hand.add(hand, last_tile).
+        """
         cp = state.current_player
-        hand = state.players.hand_with_red[cp]
-        yaku, fan, fu = Yaku.judge(hand, False, cp, state)
-        fan = int(fan) if isinstance(fan, torch.Tensor) else fan
-        fu = int(fu) if isinstance(fu, torch.Tensor) else fu
+        fan = int(state.players.fan[cp, 1].item())
+        fu = int(state.players.fu[cp, 1].item())
 
         is_ippatsu = bool(state.players.ippatsu[cp].item()) and bool(state.players.riichi[cp].item())
         is_double_riichi = bool(state.players.double_riichi[cp].item())
@@ -1118,23 +1166,56 @@ class RedMahjongSerial(Env):
     # JAX: _pass lines 1500-1550
 
     def _pass(self, state):
-        """PASS action: move to next player who can act, or draw if nobody can."""
-        cp = state.current_player
+        """PASS action: move to next player who can act, or draw if nobody can.
 
-        if state.players.legal_action_mask[cp, Action.RON]:
+        JAX reference: env.py _pass (L1599-1672) + _next_meld_player (L1130-1161).
+        Key points:
+        1. Zero out the passing player's legal_action_mask (JAX L1611)
+        2. Find next meld player by priority: RON > OPEN_KAN > PON > CHI
+        3. If multiple RON: closest to discarded_player wins
+        4. If no meld player: clear target, set draw_next, draw
+        """
+        cp = state.current_player
+        mask_4p = state.players.legal_action_mask
+
+        if mask_4p[cp, Action.RON]:
             state.players.furiten_by_pass[cp] = True
 
-        mask_4p = state.players.legal_action_mask
-        found = False
-        for offset in range(1, 4):
-            p = (cp + offset) % 4
-            if mask_4p[p].any():
-                state.current_player = p
-                state.legal_action_mask = mask_4p[p]
-                found = True
-                break
+        # Zero out the passing player's mask (JAX L1611)
+        mask_4p[cp, :] = False
 
-        if not found:
+        # Priority: RON > OPEN_KAN > PON > CHI (JAX _next_meld_player)
+        can_chi = mask_4p[:, Action.CHI_L:Action.CHI_R_RED + 1].any(dim=1)  # (4,)
+        can_pon = mask_4p[:, Action.PON] | mask_4p[:, Action.PON_RED]  # (4,)
+        can_open_kan = mask_4p[:, Action.OPEN_KAN]  # (4,)
+        can_ron = mask_4p[:, Action.RON]  # (4,)
+
+        can_any = can_chi | can_pon | can_open_kan | can_ron  # (4,)
+
+        if can_any.any():
+            # Priority vector: RON=3, OPEN_KAN=2, PON=1, CHI=0, NONE=-1
+            priority = torch.where(can_ron, torch.tensor(3),
+                         torch.where(can_open_kan, torch.tensor(2),
+                           torch.where(can_pon, torch.tensor(1),
+                             torch.where(can_chi, torch.tensor(0),
+                               torch.tensor(-1)))))
+
+            # Multiple RON: closest to discarded_player wins
+            if can_ron.sum() > 1:
+                discarded_player = state.round_state.last_player
+                distance = (torch.arange(4) - discarded_player) % 4
+                distance = torch.where(can_ron, distance, torch.tensor(99))
+                next_player = int(distance.argmin().item())
+            else:
+                next_player = int(priority.argmax().item())
+
+            state.current_player = next_player
+            state.legal_action_mask = mask_4p[next_player]
+            # Ensure PASS is available for the next player (JAX L1666)
+            state.players.legal_action_mask[next_player, Action.PASS] = True
+        else:
+            # No meld player remaining: clear target, advance to draw (JAX L1646-1659)
+            state.round_state.target = -1
             state.current_player = (state.round_state.last_player + 1) % 4
             if state.round_state.is_abortive_draw_normal:
                 state = self._abortive_draw_normal(state)
@@ -1143,14 +1224,89 @@ class RedMahjongSerial(Env):
 
         return state
 
-    def _kyuushu(self, state):
-        """Nine-terminal abortive draw."""
-        state.round_state.terminated_round = True
-        state.round_state.draw_next = False
+    def _kyuushu(self, state, *, deck_override=None):
+        """Abortive draw (kyuushu-kyuuhai / four-kan draw).
+
+        JAX maps KYUUSHU → _special_next_round: redeal with same round,
+        honba+1, scores preserved. NOT a round termination.
+
+        Args:
+            deck_override: If provided, use this (136,) int array as the new
+                wall instead of generating one via torch.randperm.  Used by
+                the replay harness to inject the JAX-generated wall so that
+                PRNG differences between JAX and PyTorch don't break replay.
+        """
+        # JAX _special_next_round L1939-1964
+        state.round_state.honba += 1
         state.round_state.is_abortive_draw_normal = True
         state.rewards.zero_()
-        if self.one_round:
-            self._finalize_game(state)
+
+        # Rebuild wall and deal fresh hands
+        if deck_override is not None:
+            deck = torch.as_tensor(deck_override, dtype=torch.int8)
+        else:
+            # Use a deterministic seed derived from game state so
+            # serial/parallel replay match (does NOT match JAX PRNG).
+            deck_values = []
+            for t in range(34):
+                for _ in range(4):
+                    deck_values.append(t)
+            deck = torch.tensor(deck_values, dtype=torch.int8)
+            gen = torch.Generator().manual_seed(
+                int(state.round_state.round) * 100 + int(state.round_state.honba))
+            perm = torch.randperm(136, generator=gen)
+            deck = deck[perm]
+
+        state.round_state.deck = deck
+        state.round_state.next_deck_ix = FIRST_DRAW_IDX
+        state.round_state.last_deck_ix = DEAD_WALL_TILES
+        state.round_state.draw_next = True
+        state.round_state.dora_indicators[0] = int(deck[9].item())
+        state.round_state.ura_dora_indicators[0] = int(deck[8].item())
+        for i in range(1, MAX_DORA_INDICATORS):
+            state.round_state.dora_indicators[i] = -1
+            state.round_state.ura_dora_indicators[i] = -1
+        state.round_state.n_kan_doras = 0
+
+        for p in range(4):
+            state.players.hand[p].zero_()
+            state.players.hand_with_red[p].zero_()
+            state.players.discard_counts[p] = 0
+            state.players.meld_counts[p] = 0
+            state.players.melds[p].fill_(EMPTY_MELD)
+            state.players.river[p].fill_(EMPTY_RIVER)
+            state.players.n_kan[p] = 0
+            state.players.is_hand_concealed[p] = True
+            state.players.riichi[p] = False
+            state.players.riichi_declared[p] = False
+            state.players.ippatsu[p] = False
+            state.players.double_riichi[p] = False
+            state.players.furiten_by_discard[p] = False
+            state.players.furiten_by_pass[p] = False
+            state.players.has_won[p] = False
+            state.players.has_yaku[p].zero_()
+            state.players.fan[p].zero_()
+            state.players.fu[p].zero_()
+            state.players.can_win[p].zero_()
+            state.players.legal_action_mask[p].zero_()
+
+        state.players.hand_with_red = Hand.make_init_hand(deck)
+        for p in range(4):
+            state.players.hand[p] = Hand.to_34(state.players.hand_with_red[p])
+
+        # Dealer draws first (dealer stays the same)
+        state.current_player = int(state.round_state.dealer)
+        state.round_state.target = -1
+        state.round_state.last_draw = -1
+        state.round_state.last_player = -1
+        state.round_state.is_haitei = False
+        state.round_state.is_abortive_draw_normal = False
+        state.round_state.kan_declared = False
+        state.round_state.can_after_kan = False
+        state.round_state.can_robbing_kan = False
+        state.round_state.terminated_round = False
+
+        state = self._draw(state)
         return state
 
     def _dummy(self, state):
