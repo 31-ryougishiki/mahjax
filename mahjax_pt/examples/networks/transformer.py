@@ -41,10 +41,10 @@ class MultiHeadSelfAttention(nn.Module):
         self.head_dim = features // num_heads
         self.scale = math.sqrt(self.head_dim)
 
-        self.q_proj = nn.Linear(features, features, bias=False)
-        self.k_proj = nn.Linear(features, features, bias=False)
-        self.v_proj = nn.Linear(features, features, bias=False)
-        self.out_proj = nn.Linear(features, features, bias=False)
+        self.q_proj = nn.Linear(features, features, bias=True)
+        self.k_proj = nn.Linear(features, features, bias=True)
+        self.v_proj = nn.Linear(features, features, bias=True)
+        self.out_proj = nn.Linear(features, features, bias=True)
 
         self.apply(orthogonal_init_)
 
@@ -54,21 +54,27 @@ class MultiHeadSelfAttention(nn.Module):
         k = self.k_proj(x).view(B, T, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = self.v_proj(x).view(B, T, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        attn_weights = (q @ k.transpose(-2, -1)) / self.scale  # (B, H, T, T)
-
+        # Build SDPA-compatible attn_mask: (B, 1, 1, T) boolean, True=keep
+        attn_mask = None
         if mask is not None:
             if mask.dim() == 2:
-                attn_mask = mask[:, None, None, :]  # (B, 1, 1, T)
+                attn_mask = mask[:, None, None, :].bool()  # (B, 1, 1, T)
             else:
-                attn_mask = mask
-            attn_weights = attn_weights.masked_fill(attn_mask == 0, float('-inf'))
+                attn_mask = mask.bool()
 
-        # Stable softmax: clamp extreme values to avoid NaN from all -inf rows
-        attn_weights = torch.clamp(attn_weights, min=-1e9, max=1e9)
-        attn = F.softmax(attn_weights, dim=-1)
-        # Replace NaN (all-masked rows) with zeros
-        attn = torch.nan_to_num(attn, nan=0.0)
-        out = attn @ v  # (B, H, T, D)
+        # F.scaled_dot_product_attention: PyTorch 2.0+ fused kernel
+        # Uses Flash Attention / Memory-Efficient Attention automatically.
+        # Avoids materializing the full (B, H, T, T) attention matrix,
+        # eliminates the isfinite safety check in softmax, and handles
+        # fully-masked rows without NaN.
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False,
+            scale=1.0 / self.scale,
+        )  # (B, H, T, D)
+
         out = out.permute(0, 2, 1, 3).contiguous().view(B, T, C)
         return self.out_proj(out)
 

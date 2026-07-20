@@ -164,7 +164,7 @@ class FeatureExtractor(nn.Module):
         dora_emb = self.dora_embed(dora) * dora_mask.unsqueeze(-1)
         dora_n = dora_mask.sum(dim=1, keepdim=True).clamp(min=1)
         dora_summary = dora_emb.sum(dim=1) / dora_n
-        dora_feat = F.relu(self.dora_dense(dora_summary))
+        dora_feat = self.dora_dense(dora_summary)
 
         # ── Fuse ──
         global_in = torch.cat([global_scalar, dora_feat], dim=-1)
@@ -182,31 +182,59 @@ class ACNet(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.policy_extractor = FeatureExtractor()
-        self.critic_extractor = FeatureExtractor()
+        self.shared_extractor = FeatureExtractor()
+        FEATURE_DIM = HAND_EMB_SIZE + HISTORY_EMB_SIZE + GLOBAL_EMB_SIZE
         self.policy_mlp = nn.Sequential(
-            nn.Linear(HAND_EMB_SIZE + HISTORY_EMB_SIZE + GLOBAL_EMB_SIZE, FINAL_MLP_DIM),
+            nn.Linear(FEATURE_DIM, FINAL_MLP_DIM),
             nn.ReLU(),
             nn.Linear(FINAL_MLP_DIM, NUM_ACTIONS),
         )
         self.value_mlp = nn.Sequential(
-            nn.Linear(HAND_EMB_SIZE + HISTORY_EMB_SIZE + GLOBAL_EMB_SIZE, FINAL_MLP_DIM),
+            nn.Linear(FEATURE_DIM, FINAL_MLP_DIM),
             nn.ReLU(),
             nn.Linear(FINAL_MLP_DIM, 1),
         )
         self.apply(orthogonal_init_)
-        # Final layers: small init for policy, standard for value
         nn.init.orthogonal_(self.policy_mlp[-1].weight, gain=0.01)
         if self.policy_mlp[-1].bias is not None:
             nn.init.zeros_(self.policy_mlp[-1].bias)
 
+    @staticmethod
+    def _remap_legacy_state_dict(state_dict):
+        """Remap old two-extractor keys to shared extractor format.
+
+        Old format: policy_extractor.xxx / critic_extractor.xxx
+        New format: shared_extractor.xxx
+        """
+        new_dict = {}
+        policy_keys = []
+        critic_keys = []
+        for k, v in state_dict.items():
+            if k.startswith('policy_extractor.'):
+                policy_keys.append((k[len('policy_extractor.'):], v))
+            elif k.startswith('critic_extractor.'):
+                critic_keys.append((k[len('critic_extractor.'):], v))
+            else:
+                new_dict[k] = v
+
+        if policy_keys:
+            # Use policy extractor weights for shared extractor
+            for sub_key, v in policy_keys:
+                new_dict['shared_extractor.' + sub_key] = v
+            # Discard critic extractor weights (now unused)
+
+        return new_dict
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        state_dict = self._remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
+
     def forward(self, obs):
-        return self.get_action_logits(obs), self.get_value(obs)
+        features = self.shared_extractor(obs)
+        return self.policy_mlp(features), self.value_mlp(features).squeeze(-1)
 
     def get_action_logits(self, obs):
-        features = self.policy_extractor(obs)
-        return self.policy_mlp(features)
+        return self.policy_mlp(self.shared_extractor(obs))
 
     def get_value(self, obs):
-        features = self.critic_extractor(obs)
-        return self.value_mlp(features).squeeze(-1)
+        return self.value_mlp(self.shared_extractor(obs)).squeeze(-1)

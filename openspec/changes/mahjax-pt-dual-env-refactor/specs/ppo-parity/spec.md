@@ -4,15 +4,16 @@
 
 逐步验证 `mahjax` (JAX/Flax) 与 `mahjax_pt` (PyTorch) 的 PPO 训练管线在相同输入下产出一致结果。
 
-**最终状态 (2026-07-10)**: 全部 6 层完成。L3 权重迁移已修复，L4 完整 ACNet loss 对齐已验证。
+**最终状态 (2026-07-11)**: 全部 7 层完成，含 MLP + ACNet 双重 Golden Data 验证。ACNet MHA bias 修复 (160/160 参数对齐)，同参数下 forward pass 7.15e-07，PPO loss 2.21e-08。
 
 ## Verification Layers
 
 ```
+L7: 30-step Golden Replay (MLP+ACNet) ← ✅ GAE bit-exact, loss < 5.7e-4
 L6: Full Training Run          ← ✅ PT 20 updates 稳定
 L5: Single Update Cycle        ← ✅ PT 管线 4 epoch 一致
-L4: PPO Update (loss + grad)   ← ✅ MLP: grad/param 一致 | ACNet: loss 一致
-L3: ACNet Forward + Weight Xfer← ✅ 显式映射 + LN eps 修复, diff < 1e-8
+L4: PPO Update (loss + grad)   ← ✅ MLP: grad/param | ACNet: 160/160, loss<2.3e-8
+L3: ACNet Forward + Weight Xfer← ✅ 显式映射 + LN eps + MHA bias 修复
 L2: GAE Computation            ← ✅ 5/5 用例通过 (含 episode boundary 修复)
 L1: PPO Math Primitives        ← ✅ 7/7 原语通过
 ```
@@ -112,7 +113,7 @@ PT 多步训练 (T=16, B=8, 20 updates):
 | `test_ppo_weight_transfer.py` | L3 | ✅ 跨框架 | ALL PASS |
 | `test_full_ppo_parity.py` | L3 (旧) | ⚠️ skip+reorder 残留 bug | 已替代 |
 | `test_ppo_update_parity.py` | L4 | ✅ 跨框架 (MLP) | loss/grad/param PASS |
-| `test_ppo_acnet_parity.py` | L4 Ext | ✅ Loss 跨框架 | loss PASS, grad 阻塞 |
+| `test_ppo_acnet_parity.py` | L4 Ext | ✅ Loss+Grad 跨框架 | 160/160 mapped, loss<2.3e-8 |
 | `test_ppo_cycle_parity.py` | L5 | PT only | PT 管线 PASS |
 | `test_ppo_training_parity.py` | L6 | PT only | 20 updates 稳定 |
 | **`test_ppo_30step_parity.py`** | **L7** | **✅ 跨框架 (MLP+合成)** | **30 updates PASS** |
@@ -176,27 +177,43 @@ PT 多步训练 (T=16, B=8, 20 updates):
 | "tanh 是主要精度误差来源" | ❌ **不准确** — exp 差异 500x 更大 |
 | "两个框架使用不同 denom 公式" | ❌ **推翻** — 两者都用 `sqrt(nu)/sqrt(bc2)+eps` |
 | GAE 100% 对齐（bit-level） | ✅ 验证通过 — adv diff=0, vm_mismatch=0 |
-| ACNet 权重迁移正确 | ⚠️ shape 自动匹配完成 (128/128)，forward pass 仍有残留差异 |
+| ACNet 权重迁移正确 | ✅ **160/160 全部对齐** (MHA bias 修复后)，forward pass value_diff=7.15e-07 |
 | PPO 数学公式正确 | ✅ 验证通过 (L1-L4) |
 
-### ACNet Golden Data 回放结果 (2026-07-11)
+### ACNet Golden Data 回放结果 ✅ (2026-07-11, 两轮修复完成)
 
-JAX ACNet (160 params) 录制 → PT ACNet (128 params, 自动 shape 匹配) 回放：
+JAX ACNet (160 params) 录制 → PT ACNet (160 params, 结构化 mapping, MHA bias 对齐) 回放
+
+**第一轮修复 — shape 匹配**:
+- 根因: 自动 shape greedy matching 无法区分相同形状参数 → forward pass 错误
+- 修复: `flat()` 改用 `sorted(tree.keys())` + 结构化 manual mapping (128→128)
+- 结果: loss/grad 改善但仍有 1.40e-02 epoch 1 loss diff
+
+**第二轮修复 — MHA bias** (最终):
+- 根因: PT `MultiHeadSelfAttention` 的 Linear 层 `bias=False`，缺失 Flax MHA 的 32 个 bias 参数
+- 修复: `transformer.py` 加 bias + mapping 重写为 160→160 + 新增 `'reshape'` 模式
+- 结果: **全部通过**
+
+**最终验证结果**:
 
 | 组件 | 结果 | 数值 |
 |------|------|------|
 | GAE advantages | ✅ PASS | diff=0.00e+00 |
 | GAE valid_mask | ✅ PASS | 0 mismatch |
-| 权重迁移 | ✅ PASS | 128/128 mapped, 32 skipped |
-| PPO loss | ❌ FAIL | diff=7.54e-01 |
-| Gradient | ❌ FAIL | max diff=3.41e+00 |
-| Parameter (1 step) | ❌ FAIL | max diff=1.20e-03 |
+| 权重迁移 | ✅ PASS | 160/160 mapped, 0 skipped |
+| Forward pass (相同参数) | ✅ PASS | value_diff=7.15e-07 |
+| PPO Loss (相同参数) | ✅ PASS | total_loss diff=2.21e-08 |
+| PPO Metrics (全部 7 项, 相同参数) | ✅ PASS | 全部 < 2.3e-08 |
+| Epoch 1 loss diff | ✅ PASS | 1.67e-05 (修复前 1.40e-02, 838×) |
+| Epoch 1 grad diff | ✅ PASS | 2.57e-05 (修复前 5.28e-02, 2,055×) |
+| PPO loss max (30步) | ✅ PASS | 5.66e-04 (修复前 1.08e+00, 1,909×) |
+| Gradient max (30步) | ✅ PASS | 7.83e-02 (修复前 3.80e+00, 48×) |
+| Parameter 30-step drift | ⚠️ Expected | 6.71e-04 (float32, <MLP's 1.21e-03) |
 
-### 后续工作
-
-- ACNet forward pass 逐层对比定位残留差异（Transformer/LayerNorm 实现细节）
-- 完成 30 步 ACNet golden data 全量录制
-- ACNet 全流程 replay 验证
+**修改文件**:
+- `transformer.py`: MHA Linear `bias=False` → `bias=True`
+- `replay_pt_acnet_golden.py`: 映射 128→160，新增 `'reshape'` 模式
+- `record_jax_acnet_golden_f64.py`: `flat()` sorted keys 确定性序
 
 ## 依赖的 JAX 侧代码
 

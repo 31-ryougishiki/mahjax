@@ -90,31 +90,11 @@
 
 **串行验证**：18/18 FULL_COVERAGE seeds 通过（含 seed 99 和 512）
 
-## 性能分析 (Phase 11)
+## 性能分析与 Yaku 优化 (Phase 11-12)
 
-### 打点基础设施
-
-| 文件 | 打点位置 | 粒度 |
-|------|---------|------|
-| `env_parallel.py:_step_batch_bs` | 11 个 handler 分别计时 + active/envs 计数 | handler 级 |
-| `env_parallel_handlers.py:_discard_batch` | `Hand.to_34_batch`, `can_win+furiten` | 子操作级 |
-| `env_parallel_internals.py:_precompute_yaku_batch` | `Yaku.judge_hand_related_batch` 累计时间 | 函数级 |
-| `replay_parallel_against_golden.py` | 数据加载、batch 初始化、step/compare 分阶段 + 进度报告 | 阶段级 |
-
-启用方式：`penv._perf = {}` → handler 自动计时 → `penv.get_perf_summary()` 输出排序结果。
-
-### 已发现瓶颈
-
-- `Yaku.judge_hand_related_batch` 占 `_step_batch_bs` 的 ~37%（~40s），为 #1 瓶颈
-- `_discard_batch` 其余部分（mask 构建等）占 ~28%（~30s）
-- 每步耗时随游戏进程递增（~0.9s → ~2.5s），后期 riichi/meld/yaku 复杂度增加
-
-### Yaku 优化尝试中的正确性问题
-
-| # | 方案 | 现象 | 根因 |
-|---|------|------|------|
-| 53 | 方案 A: 懒计算 TSUMO | `players.fan` 不匹配 | discard 时 TSUMO 使用 `next_deck_ix`（draw 前）和 discarder 手牌；draw 时使用 `next_deck_ix-1`（draw 后）和 pre-draw 手牌+drawn tile — 状态不同导致结果不同 |
-| 54 | 方案 C: RON batching | 部分 seed `has_yaku/fan/fu` 不匹配 | `(M,4,37)→(M*4,37)` reshape 后在 `judge_hand_related_batch` 内部产生细微数值差异（根因待查） |
+> 性能打点基础设施（`_perf`）和瓶颈分析 → [tasks.md](tasks.md) Phase 12。
+> 方案 A/C 最初因正确性问题被 revert（#53, #54），后通过 dump-验证-优化工作流
+> 在 Phase 12 中成功实现等效优化（yaku 4p 批量 + RON+TSUNO 合并）。
 
 ## Phase 11: PPO Training (3 个，2026-07-10)
 
@@ -134,6 +114,17 @@
 |---|------|-----|------|
 | 58 | `ppo_with_reg.py` rollout loop L408-409 | `is_new_episode = bs.terminated \| bs.truncated` 在 `reinit_terminated_batch` 之后捕获——此时 terminated 状态已被替换为 fresh init 状态（`terminated=False`），导致 `is_new_episode` **永远为 False**。JAX 的 `auto_reset` 在 scan 内部工作，`is_new_episode` 捕获的是 reset 之前的状态 | GAE 累加器（`gae_acc`/`reward_accum` 等）永不重置，value estimate 和 reward 跨 episode 泄漏 |
 | 59 | `ppo_with_reg.py` rollout loop L414 | `bs.rewards.clone()` 在 `step_batch` **之前**存储 reward。JAX 存储的是 `next_state.rewards`（step 之后的 reward）。PT 的 reward 偏移了 1 个 timestep（step t 存储的 reward 来自 step t-1） | GAE 的 `(reward, value, player)` 逐 timestep 配对不一致；GAE 累加器部分补偿但并非完全等价 |
+
+## Phase 11 (续): ACNet MHA Bias (1 个, 2026-07-11)
+
+| # | 位置 | Bug | 影响 |
+|---|------|-----|------|
+| 60 | `transformer.py:MultiHeadSelfAttention` L44-47 | PT `MultiHeadSelfAttention` 的 4 个 Linear 层（q/k/v/out_proj）设为 `bias=False`；Flax `MultiHeadDotProductAttention` 有对应 4 个 bias（shape: q/k/v=(heads,hd), out=(feat,)）。共 32 个 MHA bias 参数缺失（4 heads × 8 JTBs） | epoch 0 时 bias 值小（~3e-4），epoch 1 训练后累积为 1.69e-02 系统性 value 偏移；逐层对比发现 history JTB 差异达 0.29-0.40 |
+
+**修复**:
+- `transformer.py`: `bias=False` → `bias=True`（4 处 Linear）
+- `replay_pt_acnet_golden.py`: 映射重写 (128→160)，纳入 32 MHA bias；新增 `'reshape'` 模式处理 JAX bias `(heads,hd)` → PT Linear bias `(features,)` 的 reshape
+- 结果: value diff 从 1.69e-02 → 7.15e-07，epoch 1 loss diff 从 1.40e-02 → 1.67e-05
 
 ## 已知限制
 

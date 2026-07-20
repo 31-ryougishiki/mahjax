@@ -281,11 +281,11 @@ def train_ppo(
     if os.path.exists(pretrained_model_path):
         logger.info(f"Loading BC params: {pretrained_model_path}")
         state_dict = torch.load(pretrained_model_path, map_location=device)
-        network.load_state_dict(state_dict)
+        network.load_state_dict(state_dict, strict=False)
 
         # Baseline network (frozen, for evaluation opponent)
         baseline_net = net_cls().to(device)
-        baseline_net.load_state_dict(state_dict)
+        baseline_net.load_state_dict(state_dict, strict=False)
         for p in baseline_net.parameters():
             p.requires_grad = False
         baseline_net.eval()
@@ -293,7 +293,7 @@ def train_ppo(
         # Magnet network (frozen, for KL regularization)
         if mag_coef > 0:
             magnet_net = net_cls().to(device)
-            magnet_net.load_state_dict(state_dict)
+            magnet_net.load_state_dict(state_dict, strict=False)
             for p in magnet_net.parameters():
                 p.requires_grad = False
             magnet_net.eval()
@@ -495,7 +495,7 @@ def train_ppo(
                 cp_mb = cps_flat[idx].to(device)
 
                 logits, values_new = network(obs_mb)
-                logits = torch.where(amask_mb, logits,
+                logits = torch.where(amask_mb.bool(), logits,
                                      torch.full_like(logits, NEG))
                 dist = torch.distributions.Categorical(logits=logits)
                 logp_new = dist.log_prob(act_mb)

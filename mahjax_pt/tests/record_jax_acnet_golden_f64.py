@@ -10,15 +10,16 @@ Output: golden_data/acnet_ppo_f64.pkl
 import os, sys, pickle, time
 import numpy as np
 import jax, jax.numpy as jnp
-from jax import lax
 import optax, distrax
-import flax.linen as nn
 
 # Keep float32 for env compatibility; replay script uses float64 for comparison
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, '..', '..'))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, '..', '..', 'examples'))
 import mahjax
 from mahjax.wrappers.auto_reset_wrapper import auto_reset
+from networks.red_network import ACNet
 
 # ═══════════════════════════════════════════════════════════════════════════
 SEED = 42; NUM_ENVS = 2; NUM_STEPS = 8; NUM_UPDATES = 30
@@ -26,93 +27,12 @@ NUM_PLAYERS = 4; NUM_ACTIONS = 87
 GAMMA = 1.0; GAE_LAMBDA = 0.95; CLIP_EPS = 0.2
 ENT_COEF = 0.01; VF_COEF = 0.5; LR = 3e-4; MAX_REWARD = 320.0; NEG = -1e9
 
-# ═══════════════════════════════════════════════════════════════════════════
-# JAX ACNet
-# ═══════════════════════════════════════════════════════════════════════════
-HE, HE2, GE, FD, TD, MHL = 128, 192, 64, 256, 256, 200
-NP, NT, NA = 4, 37, NUM_ACTIONS
-
-
-class JTB(nn.Module):
-    f: int; h: int; m: int
-    @nn.compact
-    def __call__(self, x, mask=None):
-        y = nn.LayerNorm()(x)
-        if mask is not None and mask.ndim == 2:
-            mask = mask[:, None, None, :]
-        y = nn.MultiHeadDotProductAttention(
-            num_heads=self.h, kernel_init=nn.initializers.orthogonal(),
-            deterministic=True)(y, mask=mask)
-        x = x + y
-        y = nn.LayerNorm()(x)
-        y = nn.Dense(self.m, kernel_init=nn.initializers.orthogonal())(y)
-        y = nn.relu(y)
-        y = nn.Dense(self.f, kernel_init=nn.initializers.orthogonal())(y)
-        x = x + y
-        return x
-
-
-class JFE(nn.Module):
-    @nn.compact
-    def __call__(self, obs):
-        hd = jnp.clip(obs["hand"].astype(jnp.int32), -1, 99) + 1
-        if hd.ndim == 1: hd = hd[None, :]
-        he = nn.Embed(NT + 1, HE, embedding_init=nn.initializers.orthogonal())(hd)
-        hm = (hd > 0).astype(jnp.float32)
-        xh = he * hm[..., None]
-        for _ in range(2): xh = JTB(HE, 4, TD)(xh, mask=hm)
-        hf = (xh * hm[..., None]).sum(1) / jnp.maximum(hm.sum(1, keepdims=True), 1.)
-
-        ah = obs["action_history"]
-        if ah.ndim == 2: ah = ah[None, ...]
-        pl = ah[:, 0, :].astype(jnp.int32); ac = ah[:, 1, :].astype(jnp.int32)
-        ts = ah[:, 2, :].astype(jnp.int32)
-        hm2 = (ac >= 0).astype(jnp.float32)
-        pe = nn.Embed(NP + 1, HE2, embedding_init=nn.initializers.orthogonal())(jnp.clip(pl + 1, 0, 99))
-        ae = nn.Embed(NA + 1, HE2, embedding_init=nn.initializers.orthogonal())(jnp.clip(ac + 1, 0, 99))
-        te = nn.Embed(3, HE2, embedding_init=nn.initializers.orthogonal())(jnp.clip(ts + 1, 0, 99))
-        pose = nn.Embed(MHL, HE2, embedding_init=nn.initializers.orthogonal())(jnp.arange(MHL)[None, :])
-        xh2 = pe + ae + te + pose; xh2 = xh2 * hm2[..., None]
-        for _ in range(2): xh2 = JTB(HE2, 4, TD)(xh2, mask=hm2)
-        hif = (xh2 * hm2[..., None]).sum(1) / jnp.maximum(hm2.sum(1, keepdims=True), 1.)
-
-        def _b(x, nd):
-            x = jnp.asarray(x, dtype=jnp.float32)
-            if x.ndim == nd: return x[None, ...] if nd > 0 else x.reshape((1, 1))
-            elif x.ndim == nd + 1 and nd == 0: return x[:, None]
-            return x
-
-        gs = jnp.concatenate([
-            (_b(obs.get("scores", jnp.zeros(4)), 1) + 250.) / 1250.,
-            _b(obs.get("shanten_count", 0), 0) / 6.,
-            _b(obs.get("furiten", False), 0),
-            _b(obs.get("round", 0), 0) / 12., _b(obs.get("honba", 0), 0) / 10.,
-            _b(obs.get("kyotaku", 0), 0) / 10., _b(obs.get("prevalent_wind", 0), 0) / 3.,
-            _b(obs.get("seat_wind", 0), 0) / 3.], -1)
-
-        di = _b(obs.get("dora_indicators", jnp.zeros(5, dtype=jnp.int32)), 1).astype(jnp.int32)
-        di = jnp.clip(di + 1, 0, 99); dm = (di > 0).astype(jnp.float32)
-        de = nn.Embed(NT + 1, HE, embedding_init=nn.initializers.orthogonal())(di) * dm[..., None]
-        df = nn.relu(nn.Dense(GE, kernel_init=nn.initializers.orthogonal())(de.sum(1) / jnp.maximum(dm.sum(1, keepdims=True), 1.)))
-        gi = jnp.concatenate([gs, df], -1)
-        go = nn.Dense(GE, kernel_init=nn.initializers.orthogonal())(gi); go = nn.relu(go)
-        go = nn.Dense(GE, kernel_init=nn.initializers.orthogonal())(go)
-        return jnp.concatenate([hf, hif, go], -1)
-
-
-class JAC(nn.Module):
-    def setup(self):
-        self.pf = JFE(); self.cf = JFE()
-        self.pm = nn.Sequential([nn.Dense(FD, kernel_init=nn.initializers.orthogonal()), nn.relu,
-                                 nn.Dense(NA, kernel_init=nn.initializers.orthogonal(0.01))])
-        self.vm = nn.Sequential([nn.Dense(FD, kernel_init=nn.initializers.orthogonal()), nn.relu,
-                                 nn.Dense(1, kernel_init=nn.initializers.orthogonal())])
-    def __call__(self, obs):
-        return self.pm(self.pf(obs)), self.vm(self.cf(obs)).squeeze(-1)
-
 
 def flat(tree):
-    """Flatten JAX pytree to ordered list. Sorts dict keys for consistency."""
+    """Flatten JAX pytree to ordered list. Uses sorted keys for deterministic
+    ordering that is IDENTICAL between params and grads (jax.grad() may return
+    a FrozenDict with different insertion order than the original params).
+    """
     r = []
     if isinstance(tree, dict):
         for k in sorted(tree.keys()):
@@ -210,7 +130,7 @@ def main():
 
     rng = jax.random.PRNGKey(SEED)
     rng, net_key, env_key = jax.random.split(rng, 3)
-    network = JAC()
+    network = ACNet()
     dummy_obs = BASE_ENV.observe(BASE_ENV.init(jax.random.PRNGKey(0)))
     params = network.init(net_key, dummy_obs)
     print(f"  ACNet params: {len(flat(params))}")

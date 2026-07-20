@@ -716,37 +716,26 @@ class HandlersMixin:
 
         bs.players.can_win[m_idx, cps] = can_win_M
 
-        # Furiten: check if any river tile is a waiting tile
+        # Furiten: check if any river tile is a waiting tile (fully vectorized)
         disc_offsets = bs.players.discard_counts[m_idx, cps].long()  # (M,)
-        is_furiten_M = torch.zeros(M, dtype=torch.bool, device=device)
+        river_input = bs.players.river[m_idx, cps]  # (M, MAX_DISCARDS)
 
-        # Decode all rivers at once (M, MAX_DISCARDS) → tile values
-        river_tiles_M = torch.full((M, MAX_DISCARDS_PER_PLAYER), -1,
-                                   dtype=torch.int32, device=device)
-        for ri in range(MAX_DISCARDS_PER_PLAYER):
-            valid_r = disc_offsets > ri  # (M,)
-            if not valid_r.any():
-                continue
-            decoded = River.decode_tile(
-                bs.players.river[m_idx[valid_r], cps[valid_r]])  # (V, MAX_DISCARDS)
-            if decoded.ndim == 2:
-                river_tiles_M[valid_r, ri] = decoded[torch.arange(valid_r.sum(), device=device), ri]
-            else:
-                river_tiles_M[valid_r, ri] = decoded[valid_r]
+        # One-shot decode all rivers
+        decoded_all = River.decode_tile(river_input)  # (M, MAX_DISCARDS)
 
-        # Vectorized check: for each river tile, check if it's a waiting tile
-        for ri in range(MAX_DISCARDS_PER_PLAYER):
-            valid_r = disc_offsets > ri  # (M,)
-            if not valid_r.any():
-                continue
-            rt_r = river_tiles_M[valid_r, ri]  # (V,)
-            rt_ok = (rt_r >= 0) & (rt_r <= 36)  # (V,) — include red fives (34-36)
-            if rt_ok.any():
-                rv_idx = torch.arange(M, device=device)[valid_r][rt_ok]
-                rt_val = Tile.to_tile_type_tensor(rt_r[rt_ok]).long()  # red fives → tile types (34→4, 35→13, 36→22)
-                is_furiten_M[rv_idx] |= can_win_M[rv_idx, rt_val]
-                if is_furiten_M.all():
-                    break
+        # Mask: only positions the player has actually discarded
+        pos_range = torch.arange(MAX_DISCARDS_PER_PLAYER, device=device)
+        valid_mask = pos_range.unsqueeze(0) < disc_offsets.unsqueeze(1)  # (M, MAX_DISCARDS)
+
+        # Valid tiles in valid positions (include red fives 34-36)
+        rt_ok = (decoded_all >= 0) & (decoded_all <= 36) & valid_mask  # (M, MAX_DISCARDS)
+
+        # Convert red fives → canonical tile types for gather
+        rt_val = Tile.to_tile_type_tensor(decoded_all.clamp(0, 36)).long().clamp(0, 33)
+
+        # Check if each river tile is a waiting tile
+        is_waiting = can_win_M.gather(1, rt_val)  # (M, MAX_DISCARDS)
+        is_furiten_M = (rt_ok & is_waiting).any(dim=1)  # (M,)
 
         bs.players.furiten_by_discard[m_idx, cps] = is_furiten_M
         self._perf_add('discard.can_win+furiten', _time.time() - _t_furiten, M)

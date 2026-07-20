@@ -430,7 +430,6 @@ class InternalsMixin:
           - RON: batched across all 4 players via reshape (方案 C, -4→1 kernel launches)
           - TSUMO: controlled by mask (方案 A, skip entirely during discard)
         """
-        import time as _time
         M = m_idx.shape[0]
         if M == 0:
             return
@@ -447,76 +446,105 @@ class InternalsMixin:
         dora_inds = bs.round_state.dora_indicators[m_idx]  # (M, 5)
         ura_dora_inds = bs.round_state.ura_dora_indicators[m_idx]  # (M, 5)
 
-        _t_yaku = 0.0
-        MAX_MELDS_LOCAL = melds_4p.shape[2]  # typically 4
-
-        # ═══════════════════════════════════════════════════════════
-        # RON — per-player loop
-        # Note:方案 C batching (reshape to M*4) was attempted but caused
-        # subtle mismatches in has_yaku/fan/fu for some seeds.
-        # ═══════════════════════════════════════════════════════════
         if ron_mask is None:
             ron_mask = torch.ones(M, 4, dtype=torch.bool, device=device)
-
-        if ron_mask.any():
-            for p in range(4):
-                if not ron_mask[:, p].any():
-                    continue
-                _t0 = _time.time()
-                yaku_r, fan_r, fu_r = Yaku.judge_hand_related_batch(
-                    hands_4p[:, p, :], melds_4p[:, p, :], meld_counts_4p[:, p],
-                    tiles, riichi_4p[:, p],
-                    torch.ones(M, dtype=torch.bool, device=device),
-                    prevalent_winds, seat_winds_4p[:, p], dora_inds, ura_dora_inds)
-                _t_yaku += _time.time() - _t0
-                bs.players.has_yaku[m_idx, p, 0] = yaku_r.any(dim=1)
-                bs.players.fan[m_idx, p, 0] = fan_r
-                bs.players.fu[m_idx, p, 0] = fu_r
-
-        # ═══════════════════════════════════════════════════════════
-        # 方案 A: TSUMO — only for masked (env, player) pairs
-        # ═══════════════════════════════════════════════════════════
         if tsumo_mask is None:
             tsumo_mask = torch.ones(M, 4, dtype=torch.bool, device=device)
 
-        if not tsumo_mask.any():
-            self._perf_add('yaku.judge_hand_related_batch', _t_yaku, M)
+        need_ron = ron_mask.any()
+        need_tsumo = tsumo_mask.any()
+        if not need_ron and not need_tsumo:
             return
 
-        # Determine TSUMO tiles
-        if tsumo_tiles is None:
+        # Flatten common data once
+        B4 = M * 4
+        hands_flat = hands_4p.reshape(B4, 37)
+        melds_flat = melds_4p.reshape(B4, melds_4p.shape[2])
+        meld_counts_flat = meld_counts_4p.reshape(B4)
+        riichi_flat = riichi_4p.reshape(B4)
+        prevalent_flat = prevalent_winds.unsqueeze(1).expand(M, 4).reshape(B4)
+        seat_flat = seat_winds_4p.reshape(B4)
+        dora_flat = dora_inds.unsqueeze(1).expand(M, 4, 5).reshape(B4, 5)
+        ura_flat = ura_dora_inds.unsqueeze(1).expand(M, 4, 5).reshape(B4, 5)
+
+        # ═══════════════════════════════════════════════════════════════
+        # RON + TSUMO merged into ONE call (common path: both masks full)
+        # ═══════════════════════════════════════════════════════════════
+        if need_ron and need_tsumo and tsumo_tiles is None and \
+           ron_mask.all() and tsumo_mask.all():
+            tiles_flat = tiles.unsqueeze(1).expand(M, 4).reshape(B4)
             nxt = bs.round_state.next_deck_ix[m_idx].long().clamp(0, 135)
-            next_tiles = bs.round_state.deck[m_idx, nxt]  # (M,)
-        else:
-            next_tiles = tsumo_tiles  # (M,)
+            next_flat = bs.round_state.deck[m_idx, nxt].unsqueeze(1).expand(M, 4).reshape(B4)
 
-        # Per-player: only compute where mask says so
-        for p in range(4):
-            need = tsumo_mask[:, p]  # (M,)
-            if not need.any():
-                continue
-            p_idx = m_idx[need]  # (K,) — subset of env indices
-            K = p_idx.shape[0]
+            # Stack RON + TSUMO: (M*8, ...)
+            B8 = B4 * 2
+            yaku_all, fan_all, fu_all = Yaku.judge_hand_related_batch(
+                torch.cat([hands_flat, hands_flat], dim=0),
+                torch.cat([melds_flat, melds_flat], dim=0),
+                torch.cat([meld_counts_flat, meld_counts_flat], dim=0),
+                torch.cat([tiles_flat, next_flat], dim=0),
+                torch.cat([riichi_flat, riichi_flat], dim=0),
+                torch.cat([
+                    torch.ones(B4, dtype=torch.bool, device=device),
+                    torch.zeros(B4, dtype=torch.bool, device=device)]),
+                torch.cat([prevalent_flat, prevalent_flat], dim=0),
+                torch.cat([seat_flat, seat_flat], dim=0),
+                torch.cat([dora_flat, dora_flat], dim=0),
+                torch.cat([ura_flat, ura_flat], dim=0))
 
-            _t0 = _time.time()
-            yaku_t, fan_t, fu_t = Yaku.judge_hand_related_batch(
-                hands_4p[need][:, p, :],       # (K, 37)
-                melds_4p[need][:, p, :],       # (K, MAX_MELDS)
-                meld_counts_4p[need][:, p],    # (K,)
-                next_tiles[need],              # (K,)
-                riichi_4p[need][:, p],         # (K,)
-                torch.zeros(K, dtype=torch.bool, device=device),  # is_ron=False
-                prevalent_winds[need],         # (K,)
-                seat_winds_4p[need][:, p],     # (K,)
-                dora_inds[need],               # (K, 5)
-                ura_dora_inds[need])           # (K, 5)
-            _t_yaku += _time.time() - _t0
+            # Split results: first half = RON, second half = TSUMO
+            yaku_ron = yaku_all[:B4].reshape(M, 4, -1)
+            yaku_tsumo = yaku_all[B4:].reshape(M, 4, -1)
+            bs.players.has_yaku[m_idx, :, 0] = yaku_ron.any(dim=2)
+            bs.players.fan[m_idx, :, 0] = fan_all[:B4].reshape(M, 4)
+            bs.players.fu[m_idx, :, 0] = fu_all[:B4].reshape(M, 4)
+            bs.players.has_yaku[m_idx, :, 1] = yaku_tsumo.any(dim=2)
+            bs.players.fan[m_idx, :, 1] = fan_all[B4:].reshape(M, 4)
+            bs.players.fu[m_idx, :, 1] = fu_all[B4:].reshape(M, 4)
+            return
 
-            bs.players.has_yaku[p_idx, p, 1] = yaku_t.any(dim=1)
-            bs.players.fan[p_idx, p, 1] = fan_t
-            bs.players.fu[p_idx, p, 1] = fu_t
+        # ═══════════════════════════════════════════════════════════════
+        # Fallback: separate RON / TSUMO calls (non-standard mask paths)
+        # ═══════════════════════════════════════════════════════════════
+        if need_ron:
+            tiles_flat = tiles.unsqueeze(1).expand(M, 4).reshape(B4)
+            yaku_r, fan_r, fu_r = Yaku.judge_hand_related_batch(
+                hands_flat, melds_flat, meld_counts_flat,
+                tiles_flat, riichi_flat,
+                torch.ones(B4, dtype=torch.bool, device=device),
+                prevalent_flat, seat_flat, dora_flat, ura_flat)
+            bs.players.has_yaku[m_idx, :, 0] = yaku_r.reshape(M, 4, -1).any(dim=2)
+            bs.players.fan[m_idx, :, 0] = fan_r.reshape(M, 4)
+            bs.players.fu[m_idx, :, 0] = fu_r.reshape(M, 4)
 
-        self._perf_add('yaku.judge_hand_related_batch', _t_yaku, M)
+        if need_tsumo:
+            if tsumo_tiles is None:
+                nxt = bs.round_state.next_deck_ix[m_idx].long().clamp(0, 135)
+                next_tiles = bs.round_state.deck[m_idx, nxt]
+            else:
+                next_tiles = tsumo_tiles
+            next_flat = next_tiles.unsqueeze(1).expand(M, 4).reshape(B4)
+
+            mask_flat = tsumo_mask.reshape(B4)
+            need_idx = mask_flat.nonzero(as_tuple=False).squeeze(-1)
+            if need_idx.shape[0] > 0:
+                yaku_t, fan_t, fu_t = Yaku.judge_hand_related_batch(
+                    hands_flat[need_idx], melds_flat[need_idx], meld_counts_flat[need_idx],
+                    next_flat[need_idx], riichi_flat[need_idx],
+                    torch.zeros(need_idx.shape[0], dtype=torch.bool, device=device),
+                    prevalent_flat[need_idx], seat_flat[need_idx],
+                    dora_flat[need_idx], ura_flat[need_idx])
+
+                yaku_out = torch.zeros(M, 4, yaku_t.shape[1], dtype=torch.bool, device=device)
+                fan_out = torch.zeros(M, 4, dtype=torch.int32, device=device)
+                fu_out = torch.zeros(M, 4, dtype=torch.int32, device=device)
+                need_2d = torch.stack([need_idx // 4, need_idx % 4], dim=1)
+                yaku_out[need_2d[:, 0], need_2d[:, 1]] = yaku_t
+                fan_out[need_2d[:, 0], need_2d[:, 1]] = fan_t
+                fu_out[need_2d[:, 0], need_2d[:, 1]] = fu_t
+                bs.players.has_yaku[m_idx, :, 1] = yaku_out.any(dim=2)
+                bs.players.fan[m_idx, :, 1] = fan_out
+                bs.players.fu[m_idx, :, 1] = fu_out
 
     # ═════════════════════════════════════════════════════════════
     # Batch settlement helpers

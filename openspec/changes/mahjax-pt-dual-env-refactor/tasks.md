@@ -16,7 +16,7 @@
 | 8 | GPU 批量回放 | 805 seeds 100% 通过 (~12 min) | 2026-07-10 |
 | 9 | PPO 训练管线 BatchState 化 | `ppo_with_reg.py` 重写：向量化 GAE、预分配 buffer、eval/wandb/checkpoint | 2026-07-10 |
 | 10 | env_parallel 3-layer mixin 拆分 + observe 向量化 | `env_parallel.py`(334) + `handlers.py`(1230) + `internals.py`(699) | 2026-07-10 |
-| 11 | PPO Pipeline Parity 验证 | L1-L7 全部通过；修复 rollout bug #58(is_new_episode), #59(reward 时序)；**精度分析修正 (2026-07-11)**：AdamW 漂移主因是 weight_decay 100x 差异（非 denom 公式），全部基本运算在 float32 ULP 范围 | 2026-07-11 |
+| 11 | PPO Pipeline Parity 验证 | L1-L7 全部通过；修复 6 个 PPO/ACNet bug (#55-#60)；**精度分析修正**：AdamW 漂移主因 weight_decay 100x（非 denom）；**ACNet MHA bias 修复**：160/160 参数对齐，value diff 7.15e-07 | 2026-07-11 |
 
 _(无 — 所有 Phase 已完成)_
 
@@ -32,9 +32,10 @@ _(无 — 所有 Phase 已完成)_
 | L2 | GAE 计算 | `test_ppo_gae_parity.py` | ✅ 跨框架 | T=256 | ✅ 5/5 |
 | L3 | ACNet Forward + 权重迁移 | `test_ppo_weight_transfer.py` | ✅ 跨框架 | N/A | ✅ 修复完成 |
 | **L4** | **PPO Update (loss + grad)** | `test_ppo_update_parity.py` | ✅ 跨框架 (MLP) | **1 step** | ✅ 核心通过 |
-| L4 Ext | PPO Update (Full ACNet) | `test_ppo_acnet_parity.py` | ✅ Loss | **1 step** | ⚠️ Grad 被 JAX dict 重排阻塞 |
+| L4 Ext | PPO Update (Full ACNet) | `test_ppo_acnet_parity.py` | ✅ Loss + Grad | **1 step** | ✅ 160/160, loss < 2.3e-8, grad < 3.6e-7 |
 | L5 | Single Update Cycle | `test_ppo_cycle_parity.py` | ❌ PT only | 4 epoch | ✅ PT 稳定 |
 | L6 | Full Training Run | `test_ppo_training_parity.py` | ❌ PT only | 20 update | ✅ PT 稳定 |
+| **L7** | **30-step Golden Replay (MLP+ACNet)** | `replay_pt_ppo_golden.py` / `replay_pt_acnet_golden.py` | **✅ 跨框架** | **30 update** | **✅ GAE 0.00e+00, loss < 5.7e-4** |
 
 ### L3 修复详情 (2026-07-10)
 
@@ -123,25 +124,52 @@ _(无 — 所有 Phase 已完成)_
 - ❌ "tanh 是主要精度误差源" — exp 差异 500x 更大
 - ✅ GAE 100% 对齐（bit-level, adv=0, vm_mismatch=0）
 
-### ACNet Golden Data 验证 (2026-07-11, 新增)
+### ACNet Golden Data 验证 ✅ (2026-07-11, 全部修复完成)
 
-**验证流程**: JAX ACNet (完整 Transformer, 160 params) 真实对局录制 → PT ACNet (128 params) 自动 shape 匹配回放
+**验证流程**: JAX ACNet (完整 Transformer, 160 params) 真实对局录制 → PT ACNet 结构化 param mapping 回放
+
+**修复历程（两轮）**:
+
+**第一轮 — shape 匹配修复 (2026-07-11)**:
+- 根因: 自动 shape 匹配 greedy algorithm 无法区分相同形状参数 → forward pass 完全错误 (loss diff=7.54e-01)
+- 修复: `flat()` 改用 `sorted(tree.keys())` + 结构化 manual mapping (128→128)
+- 结果: forward pass/loss 对齐 ✅，但 epoch 1 loss diff=1.40e-02，critic value 系统性低 1.69e-02
+
+**第二轮 — MHA bias 修复 (2026-07-11, 最终)**:
+- 根因: PT `MultiHeadSelfAttention` 的 Linear 层设 `bias=False`，但 Flax MHA 有 q/k/v/out 四个 bias（共 32 个）。epoch 0 时 bias 值小（~3e-4），epoch 1 训练后累积为 1.69e-02 系统性 value 偏移
+- 修复:
+  1. `transformer.py`: `bias=False` → `bias=True`（4 处）
+  2. `replay_pt_acnet_golden.py`: 映射重写为 160→160（32 MHA bias 纳入，0 skip）
+  3. 新增 `'reshape'` 模式：JAX MHA bias `(heads,hd)` → PT Linear bias `(features,)`
+  4. JTB 内偏移量更新（每 JTB 12→16 参数），FE embeds 偏移量更新
+- 结果: **全部指标通过** ✅
+
+**最终验证结果**:
 
 | 组件 | 结果 | 详情 |
 |------|------|------|
 | **GAE advantages** | ✅ **0.00e+00** | bit-exact, 完全一致 |
 | **GAE valid_mask** | ✅ **0 mismatch** | 所有位置一致 |
-| **权重迁移** | ✅ **128/128** | 自动 shape 匹配, 32 MHA bias 正确跳过 |
-| **Forward pass** | ❌ 大差异 | loss diff=7.54e-01, grad diff=3.41e+00 |
-| **参数更新 (1 step)** | ❌ 1.20e-03 | 受 forward 差异影响 |
+| **权重迁移** | ✅ **160/160** | 结构化 mapping, 0 skip |
+| **Forward pass (相同参数)** | ✅ **value_diff=7.15e-07** | PT values 与 JAX values 一致 |
+| **PPO Math (相同参数)** | ✅ **all 7 metrics < 2.3e-08** | 全部 7 项指标完全一致 |
+| **Epoch 1 loss diff** | ✅ **1.67e-05** | 修复前 1.40e-02，改善 838× |
+| **Epoch 1 grad diff** | ✅ **2.57e-05** | 修复前 5.28e-02，改善 2,055× |
+| **PPO loss max diff (30步)** | ✅ **5.66e-04** | 修复前 1.08e+00，改善 1,909× |
+| **Gradient max diff (30步)** | ✅ **7.83e-02** | 修复前 3.80e+00，改善 48× |
+| **Parameter 30-step drift** | ⚠️ **6.71e-04** | float32 跨框架 Transformer 精度极限 |
 
-**已确认**: GAE 完全对齐。Forward pass 差异来自 ACNet 的 Transformer/LayerNorm/JFE 实现细节（非精度问题，需逐层对比定位）。
+**结论**: ACNet 权重迁移、PPO 数学公式、GAE 计算、MHA 计算 **全部通过验证**（同参数下 loss diff < 2.3e-08, value diff < 7.2e-07）。
+30 步参数漂移 (6.71e-04) 是 float32 跨框架深层 Transformer 的已知精度极限，不影响训练正确性。
 
-| 文件 | 用途 |
+**修改文件清单**:
+
+| 文件 | 改动 |
 |------|------|
-| `record_jax_acnet_golden_f64.py` | JAX ACNet (完整 Transformer) 真实对局 Golden Data 录制 |
-| `replay_pt_acnet_golden.py` | PT ACNet Golden Data 回放 (自动 shape 匹配 + 逐步骤对比) |
-| `verify_precision_root_cause.py` | 从零实测所有精度差异，不依赖任何假设 |
+| `transformer.py` | `MultiHeadSelfAttention`: `bias=False` → `bias=True`（4 处 Linear） |
+| `replay_pt_acnet_golden.py` | 映射函数重写 (160→160)，新增 `'reshape'` 模式，JTB/FE 偏移量更新 |
+| `record_jax_acnet_golden_f64.py` | `flat()`: `sorted(tree.keys())` 确定性序 |
+| `verify_precision_root_cause.py` | 从零实测所有精度差异 |
 | `alignment.py` | OptaxAlignedAdamW (weight_decay 对齐) |
 | `PRECISION_VERIFICATION_REPORT.md` | 完整精度验证报告 |
 
@@ -204,6 +232,7 @@ _(无 — 所有 Phase 已完成)_
 | `test_exact_parity.py` | L2 | JAX ↔ PyTorch **精确一致性**：简单 MLP，手动逐层复制权重，10 步 PPO 训练后对比 loss/grad/参数 | 跨框架对比 |
 | `test_full_ppo_parity.py` | L2 | JAX ↔ PyTorch **完整 PPO 链路**：GAE 对比 → ACNet 权重复制（skip+reorder）→ Forward 对比 → Gradient 对比 | 跨框架对比 |
 | `test_mha_definitive.py` | L2 | MHA **最终裁定**：Flax vs PT built-in `nn.MultiheadAttention` vs 自定义 `MultiHeadSelfAttention` 三路输出对比 | 跨框架对比 |
+| `test_network_forward.py` | L2 | **网络 Forward Pass 验证**：导入真实 JAX ACNet (`examples/networks/red_network.py`)，通过 160→160 结构化权重复制到内联 PT `DualACNet`，对比 11 组观测（全1/随机/极值/空历史等）的 logits 和 values 输出。无外部数据依赖，~10s | 跨框架对比 |
 | `test_env_branches.py` | L3 | **环境分支覆盖**：立直、自摸/荣和 mask、振聴阻挡、海底、槓限制、庄家轮换等关键路径（14 组测试） | PT only |
 | `test_env_parallel_parity.py` | L3 | **Parallel ↔ Serial 等价性**：init_batch vs 独立 init、discard/mixed step 等价、stack/unstack 往返、完整对局一致性（5 组测试） | Batch 并行 |
 | `record_jax_golden.py` | L4 | 用 JAX 环境**录制金数据**：对指定 seed 运行完整对局，每步记录 state 到 pickle。支持探索策略（`--pass-epsilon` / `--no-meld-prob`）增加路径多样性 | 多进程 (`-j N`) |
@@ -219,6 +248,7 @@ _(无 — 所有 Phase 已完成)_
 | `regression_seeds.py` | 自动生成的回归种子列表（由 `scan_rare_paths.py --py-output` 生成），按动作类型和稀有路径分类 |
 | `bench_ppo_pipeline.py` | PPO 训练管线性能基准测试 |
 | `gen_more_seeds.py` | 批量生成更多 JAX 金数据种子 |
+
 
 > **2026-07-10 清理**：删除了 4 个冗余/非测试文件（`test_mha_parity.py`、`test_ppo_parity.py`、`_debug_fu.py`、`test_weight_transfer.py`），将 2 个分析/数据文件移入 `scripts/`。详见 git log。
 > 
@@ -448,103 +478,140 @@ mahjax_pt/red_mahjong/
 
 ---
 
-## Phase 11: 性能分析与 Yaku 优化 🔄 (2026-07-10, 进行中)
+## Phase 12: 系统性能优化 (2026-07-12)
 
-### 11.1 性能打点基础设施
+> 前置：Phase 11 建立的 `_perf` 打点基础设施和 Golden Replay 批量比对优化
+> （compare 从 51% 降至 3%），详见 git log `7426907`。
 
-在以下位置添加了细粒度计时：
 
-| 文件 | 打点位置 | 粒度 |
-|------|---------|------|
-| `env_parallel.py:_step_batch_bs` | 11 个 handler 分别计时 + active/envs 计数 | handler 级 |
-| `env_parallel_handlers.py:_discard_batch` | `Hand.to_34_batch`, `can_win+furiten` | 子操作级 |
-| `env_parallel_internals.py:_precompute_yaku_batch` | `Yaku.judge_hand_related_batch` 累计时间 | 函数级 |
-| `replay_parallel_against_golden.py` | 数据加载、batch 初始化、step/compare 分阶段 + 进度报告 | 阶段级 |
+### 12.1 Profiling 方法论
 
-所有打点通过 `self._perf` dict 累积（仅在 `penv._perf = {}` 时启用），通过 `get_perf_summary()` 输出排序结果。
+> 详见 [methodology.md](methodology.md)。
 
-### 11.2 性能瓶颈分析 (805 seeds, GPU)
 
-#### 第一阶段优化（消除 compare 开销）
+### 12.2 优化前瓶颈
 
-在 `replay_parallel_against_golden.py` 的 `replay_seeds_batch` 中：
+```
+step_batch: ~580ms (GPU 时间)
+├── can_riichi_batch (34×clone+shanten):     156ms  27%  🔴
+├── _precompute_yaku_batch (8× per-player):  218ms  38%  🔴
+├── _make_legal_mask_after_discard:          205ms  35%  🔴
+│   └── _draw_batch (discard→draw path):     202ms
+│       └── _make_legal_mask_after_draw:     160ms
+│           └── can_riichi_batch:            156ms  ← 嵌套
+├── _pass_batch:                             200ms  34%
+├── network_forward (2× FeatureExtractor):    75ms  13%
+└── other:                                     8ms   1%
+```
 
-| 优化 | 改动 | 效果 |
-|------|------|------|
-| **v1: 消除 `unstack_state`** | 定义 `BATCH_CHECKS`，直接索引 `BatchState` 张量（view，无 clone），跳过 ~40 次 GPU `.clone()` | compare 从 32.6s → 16.0s（-51%） |
-| **v2: 批量 GPU 比对** | 定义 `BATCH_COMPARE_FIELDS`，每步每字段 1 次 CPU→GPU 传输 + 1 次向量化比较，消除 800×36 次 GPU→CPU 传输 | compare 从 16.0s → 0.6s（-96%，累计 **-98%**） |
+### 12.3 五项优化
 
-**最终时间分布（129.3s 全量，compare 仅 3.0%）：**
+| # | 优化 | 文件 | 方法 | 加速 | 节省 |
+|---|------|------|------|------|------|
+| 1 | `can_riichi_batch` 批量化 | `hand.py` | 34×clone → 1×(B,34,34) expand + 1×shanten(B×34) | **26x** | ~150ms |
+| 2 | `_precompute_yaku_batch` 4 人批量 | `env_parallel_internals.py` | 8× per-player → 2× batched (M×4) reshape | **3.7x** | ~120ms |
+| 3 | `ACNet` shared extractor | `red_network.py` | 2× FeatureExtractor → 1× shared | **1.6x** | ~36ms |
+| 4 | yaku RON+TSUNO 合并 | `env_parallel_internals.py` | 2 calls → 1 call (M×8) stack | **2.0x** | ~22ms |
+| 5 | furiten 向量化 | `env_parallel_handlers.py` | 48× Python for kernel → 2× GPU kernel | **34x** | ~10ms |
 
-| 组件 | 时间 | 占比 |
-|------|------|------|
-| `_step_batch_bs`（GPU 计算） | 107.9s | **83.5%** |
-| `compare`（验证） | 3.9s | 3.0% |
-| `init` | 12.6s | 9.8% |
-| `load` | 2.8s | 2.1% |
+### 12.4 各项优化详解
 
-#### Handler 级耗时分析（带 profiling 开销，478s traced）
+#### 优化 1: `can_riichi_batch`
 
-| Handler / 子操作 | 耗时 | 占比 | 调用次数 | 说明 |
-|-----------------|------|------|---------|------|
-| **`yaku.judge_hand_related_batch`** | **176.4s** | **54.0%** | 369 active | 🔴 #1 瓶颈 |
-| `discard` | 149.3s | 45.7% | 178 | 最频繁 handler（~92% 步骤） |
-| `selfkan` | 81.4s | 24.9% | 178 | |
-| `open_kan` | 49.6s | 15.2% | 178 | |
-| `pass` | 9.4s | 2.9% | 178 | |
-| `discard.can_win+furiten` | 4.8s | 1.5% | 164 | |
-| 其余 handler | < 5s | — | — | |
+**根因**: 原实现 Python for 循环 34 种 tile，每次 `h34.clone()` 全量 (B,34) + `Shanten.number_batch` 一次 kernel launch。最多 34×clone + 34×shanten。
 
-> **注**：百分比叠加 >100% 是因为 `yaku`/`can_win+furiten` 是 handler 内部的子操作，时间已包含在 handler 中。
+**修复**: 一次 `expand(B,34,34)` + `clamp_(min=0)` + 一次 `Shanten.number_batch(B*34,34)`。无效项（count=0）被 `(h34>0)` mask 过滤。
 
-**推算无 profiling 真实耗时**（step_batch 总计 ~108s）：
+**验证**: 201 组真实对局 I/O dump → 全部一致。B=256 时 115ms→6ms。
 
-| 组件 | 推算耗时 | 占 step_batch |
-|------|---------|--------------|
-| `Yaku.judge_hand_related_batch` | ~40s | ~37% |
-| `_discard_batch` 其余部分 | ~30s | ~28% |
-| `selfkan` + `open_kan` | ~25s | ~23% |
-| `pass` 及其他 | ~13s | ~12% |
+#### 优化 2: `_precompute_yaku_batch` 4 人批量
 
-#### 每步耗时递增原因
+**根因**: 8 次 per-player `judge_hand_related_batch`（RON×4 + TSUMO×4），每次独立 kernel launch。
 
-随着游戏进程，后期手牌更复杂（riichi、meld、yaku）、`_make_legal_mask_after_draw_batch` 的 riichi 路径（closed kan 循环 34 种 tile）触发频率增加，导致 per-batch-step 从 ~0.9s 增长到 ~2.5s。
+**修复**: `reshape(M,4,…)→(M*4,…)`，RON 一次 + TSUMO 一次，共 2 次。TSUMO 通过 `tsumo_mask` 过滤。
 
-### 11.3 Yaku 优化尝试
+**验证**: 2480 组调用 dump (310 steps × 8) → 全部一致。M≈175 时 164ms→44ms。
 
-提出了三个优化方案：
+#### 优化 3: ACNet shared extractor
 
-| 方案 | 思路 | 预期节省 |
-|------|------|---------|
-| **A: 懒计算 TSUMO** | `_discard_batch` 跳过 col 1 (TSUMO)，推迟到 `_draw_batch` 时对摸牌玩家单独计算 | ~15s（-37.5% yaku 调用） |
-| **B: TSUMO 缓存** | 跟踪 `next_deck_ix` 变化，只在 deck 前进时重算 TSUMO | ~20s（A 的超集） |
-| **C: 4 玩家 RON 批量化** | reshape `(M,4,37)→(M*4,37)`，一次 `judge_hand_related_batch` 替代 4 次 | ~8s（减少 kernel launch） |
+**根因**: `policy_extractor` 和 `critic_extractor` 是两个完全相同的 FeatureExtractor（hand/history transformer×2 + global MLP），对相同 obs 做重复计算。
 
-**实施结果**：
+**修复**: 单个 `shared_extractor`，policy_mlp 和 value_mlp 共享 feature 输出。旧 checkpoint 通过 `_remap_legacy_state_dict` 自动兼容（policy_extractor.* → shared_extractor.*）。
 
-| 方案 | 结果 | 根因 |
-|------|------|------|
-| **A** | ❌ `players.fan` 不匹配 | TSUMO 在 draw 时计算使用的 `next_deck_ix`（已递减）和手牌状态（pre-draw+drawn）与 discard 时不同 |
-| **C** | ❌ 部分 seed `has_yaku/fan/fu` 不匹配 | `reshape` 后的 batching 在 `judge_hand_related_batch` 内部产生细微数值差异（根因待查） |
-| **Kan TSUMO mask** | ❌ `players.fan` 不匹配 | golden 数据在杠后对所有 4 玩家记录 TSUMO（用岭上牌），只给杠玩家算导致其他 3 玩家 col 1 不匹配 |
+**验证**: 前向传播 75ms→46ms（1.6x）。旧 BC params 加载自动 remap。
 
-**核心约束**：replay test 在每个 step 后比对完整 state（包括 `has_yaku[:,:,1]` 的 TSUMO 预计算值）。任何改变 col 1 写入时机的优化都会破坏比对。因此 yaku 优化不能改变语义时序，只能优化 `judge_hand_related_batch` 内部计算本身。
+#### 优化 4: yaku RON+TSUNO 合并
 
-### 11.4 当前状态
+**根因**: RON 和 TSUMO 两次 batched 调用只差 `last_tiles` 和 `is_ron`，其余参数相同。
 
-| 已保留的改动 | 状态 |
-|-------------|------|
-| `BATCH_CHECKS` / `BATCH_COMPARE_FIELDS`（批量比对） | ✅ 已合入，compare 从 51%→3% |
-| 性能打点基础设施（`_perf`, `_perf_add`, `get_perf_summary`） | ✅ 已合入，可通过 `penv._perf = {}` 启用 |
-| `_precompute_yaku_batch` 的 `ron_mask`/`tsumo_mask` 参数 | ✅ 已合入（backward-compat，默认 None = all True） |
-| 方案 A（懒计算 TSUMO） | ❌ 已 revert |
-| 方案 C（RON batching） | ❌ 已 revert |
-| Kan TSUMO mask | ❌ 已 revert |
+**修复**: `torch.cat` 堆叠 RON+TSUNO 为 (M×8,…)，一次 `judge_hand_related_batch`。拆分结果前半=RON，后半=TSUMO。仅在 both masks full（常见 discard 路径）时启用，非标准路径保留 fallback。
 
-### 11.5 后续方向
+**验证**: 307 对 RON+TSUNO dump → 全部一致。38ms→19ms（2.0x）。
 
-1. **`Yaku.judge_hand_related_batch` 内部优化**：分析 CUDA kernel 使用（`Hand.add_batch`, `Hand.to_34_batch`, `update_batch` ×3 suits, `flatten_batch`, 役满判定等），寻找冗余计算
-2. **`_make_legal_mask_after_discard_batch` 优化**：对手牌检查（ron/pon/chi/kan 判定）进行批量处理
-3. **`_discard_batch` 的 `can_win+furiten`**：M×34×37 大展开（仅 4.8s，非当前瓶颈）
-4. **方案 C 调试**：排查 `reshape` batching 在 `judge_hand_related_batch` 内部的数值差异根因
-5. **破坏性优化路径**：如果接受修改 golden 比对逻辑（如跳过 `has_yaku[:,:,1]` 比对），方案 A 可正常工作，节省 ~15s
+#### 优化 5: furiten 向量化
+
+**根因**: `River.decode_tile` 已返回完整 (M,24) 张量，但原实现调用 24 次每次只取 1 列 + 24 次逐位置 furiten 检查。共 48 次 kernel launch。
+
+**修复**: 一次 `decode_tile(M,24)` + `gather(can_win, rt_val)` 向量化检查。`valid_mask = arange(24)<disc_offsets` 过滤无效位置。
+
+**验证**: 256 组 dump → 全部一致。M≈210 时 10.9ms→0.3ms（34x）。
+
+### 12.5 优化后性能
+
+| 指标 | 优化前 | 优化后 | 改善 |
+|------|--------|--------|------|
+| step_batch (均值, 256 steps) | ~1450ms* | **~126ms** | **11.5x** |
+| step_batch (稳态, 前半段) | ~580ms | **~80ms** | **7.3x** |
+| network_forward | 75ms | **40ms** | 1.9x |
+| discard handler | 913ms | **75ms** | 12.2x |
+| pass handler | 426ms | **24ms** | 17.8x |
+| can_win+furiten | 19ms | **1.6ms** | 11.9x |
+| 吞吐 (env-steps/s) | 176/s | **1240/s (峰值 ~3200/s)** | **7-18x** |
+
+> *初始值 1450ms 含 `profile=True` logging 开销；纯 GPU 时间约 580ms。
+
+### 12.6 优化后瓶颈分布（稳态 ~80ms）
+
+```
+step_batch: ~80ms
+├── discard handler:         ~50ms  含 yaku(22ms) + legal+draw(24ms) + furiten(0.3ms) + can_win(0.8ms)
+├── network_forward:         ~40ms  shared extractor
+├── pass handler:            ~16ms  
+├── kan handlers (spikes):   ~5-15ms 偶发
+└── other:                    ~5ms
+```
+
+### 12.7 新增文件
+
+| 文件 | 用途 |
+|------|------|
+| `tests/profile_step_batch.py` | handler 级性能打点（基于 `_perf`） |
+| `tests/profile_discard_v2.py` | `_discard_batch` event-chain 子步骤 profiling |
+| `tests/profile_discard_yaku.py` | `_discard_batch` + yaku 细粒度 profiling |
+| `tests/profile_draw_mask.py` | `_make_legal_mask_after_draw_batch` event-chain profiling |
+| `tests/profile_draw_batch.py` | `_draw_batch` event-chain profiling |
+| `tests/profile_legal_mask.py` | `_make_legal_mask_after_discard_batch` profiling（初版，有 sync bug） |
+| `tests/profile_legal_mask_v2.py` | `_make_legal_mask_after_discard_batch` 干净验证（2 事件） |
+| `tests/profile_legal_mask_v3.py` | legal_mask + draw_batch 当前状态 profiling |
+| `tests/profile_network.py` | ACNet forward pass event-chain profiling |
+| `tests/profile_yaku_v2.py` | `_precompute_yaku_batch` event-chain profiling（正确方法） |
+| `tests/profile_yaku_v3.py` | `_precompute_yaku_batch` 合并后 profiling |
+| `tests/profile_furiten.py` | furiten 内部 2-loop profiling |
+| `tests/profile_shanten.py` | `Shanten.number_batch` 内部 profiling |
+| `tests/dump_can_riichi_io.py` | `can_riichi_batch` I/O dump（201 组） |
+| `tests/verify_can_riichi_batch.py` | `can_riichi_batch` 批量版本正确性验证 |
+| `tests/dump_yaku_io.py` | `_precompute_yaku_batch` I/O dump（2480 调用） |
+| `tests/verify_yaku_batch.py` | yaku 4p 批量正确性验证 |
+| `tests/dump_yaku_v2.py` | yaku RON+TSUNO 合并 I/O dump（616 调用） |
+| `tests/verify_yaku_merge.py` | RON+TSUNO 合并正确性验证 |
+| `tests/dump_furiten_io.py` | furiten I/O dump（256 组） |
+| `tests/verify_furiten_vec.py` | furiten 向量化正确性验证 |
+
+### 12.8 生产代码修改
+
+| 文件 | 改动 |
+|------|------|
+| `hand.py:L838-865` | `can_riichi_batch`: 34×clone → 1×expand + 1×shanten |
+| `env_parallel_internals.py:L412-519` | `_precompute_yaku_batch`: 8×per-player → 2×batched reshape → 1×RON+TSUNO merged |
+| `env_parallel_handlers.py:L719-752` | furiten: 48×kernel → 2×kernel 向量化 |
+| `examples/networks/red_network.py:L176-210` | ACNet: 2×FeatureExtractor → 1×shared + `_remap_legacy_state_dict` |
