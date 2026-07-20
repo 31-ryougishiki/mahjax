@@ -1,6 +1,6 @@
 # MahJax Training Scripts
 
-按训练硬件分类的即用型训练脚本。
+按训练硬件分类的即用型训练脚本。**所有参数统一由 `config.json` 管理。**
 
 ## 为什么 GPU 用 JAX，NPU 用 PyTorch？
 
@@ -12,116 +12,174 @@
 | **核心优化** | `jax.jit` 编译 CUDA kernel | eager 模式，适配 torch_npu |
 | **速度** | ~1M+ steps/sec | 取决于 NPU 算力 |
 | **CLI 格式** | `key=value` (OmegaConf) | `--key value` (argparse) |
+| **默认 env** | `no_red_mahjong` | `red_mahjong` |
 
-JAX 在 NVIDIA GPU 上能利用 XLA 编译器直接将计算图编译为 CUDA kernel，配合 `jax.vmap` 自动向量化，性能远超 Python 循环的 eager 模式。PyTorch eager 路径的存在是为了支持 JAX 不支持的硬件（如 Ascend NPU）——**如果你有 NVIDIA GPU，请用 `gpu/` 目录下的 JAX 脚本。**
+JAX 在 NVIDIA GPU 上能利用 XLA 编译器直接将计算图编译为 CUDA kernel，配合 `jax.vmap` 自动向量化，性能远超 Python 循环的 eager 模式。PyTorch eager 路径的存在是为了支持 JAX 不支持的硬件（如 Ascend NPU）。
 
 ## 目录结构
 
 ```
 scripts/train/
+├── _common.sh                 # 共享 config.json 加载器
 ├── README.md
-├── npu/                        # Ascend NPU 训练
-│   ├── run_bc.sh               # BC 预训练（含离线数据收集）
-│   ├── run_ppo.sh              # PPO 强化学习训练
-│   ├── run_all.sh              # 一键全流程
-│   ├── offline_data/           # [产物] 离线数据集
-│   ├── params/                 # [产物] 模型参数
-│   ├── checkpoints/            # [产物] PPO 周期 snapshot
-│   ├── logs/                   # [产物] 训练日志
-│   └── fig/                    # [产物] 可视化 SVG
+├── npu/                       # Ascend NPU 训练
+│   ├── config.json            # ★ 唯一配置入口
+│   ├── run_bc.sh
+│   ├── run_ppo.sh
+│   ├── run_all.sh
+│   ├── offline_data/          # [产物]
+│   ├── params/                # [产物]
+│   ├── checkpoints/           # [产物]
+│   ├── logs/                  # [产物]
+│   └── fig/                   # [产物]
 │
-└── gpu/                        # NVIDIA GPU 训练
+└── gpu/                       # NVIDIA GPU 训练
+    ├── config.json            # ★ 唯一配置入口
     ├── run_bc.sh
     ├── run_ppo.sh
     ├── run_all.sh
-    ├── offline_data/
-    ├── params/
-    ├── checkpoints/
-    ├── logs/
-    └── fig/
+    ├── offline_data/          # [产物]
+    ├── params/                # [产物]
+    ├── checkpoints/           # [产物]
+    ├── logs/                  # [产物]
+    └── fig/                   # [产物]
 ```
+
+## config.json 参数说明
+
+训练前只需修改 `config.json`，无需改动脚本。完整字段：
+
+```json
+{
+    "env": {
+        "name": "red_mahjong",         // "red_mahjong" | "no_red_mahjong"
+        "round_mode": "single",        // "single" | "east" | "half"
+        "observe_type": "dict"         // "dict" (Transformer) | "2D" (CNN)
+    },
+    "device": {
+        "type": "npu",                 // "npu" | "cuda" | "cpu"
+        "id": 0                        // 卡号
+    },
+    "bc": {
+        "batch_size": 1024,
+        "lr": 0.0003,
+        "num_epochs": 5,
+        "seed": 42,
+        "val_split": 0.1
+    },
+    "ppo": {
+        "seed": 0,
+        "num_envs": 1024,
+        "num_steps": 256,
+        "total_timesteps": 100000000,
+        "lr": 0.0003,
+        "ent_coef": 0.01,
+        "clip_eps": 0.2,
+        "vf_coef": 0.5,
+        "update_epochs": 4,
+        "minibatch_size": 4096,
+        "mag_coef": 0.2,
+        "gamma": 1.0,
+        "gae_lambda": 0.95,
+        "eval_interval": 10,
+        "eval_num_envs": 1000
+    },
+    "paths": {
+        "offline_data": "offline_data",
+        "params": "params",
+        "checkpoints": "checkpoints",
+        "logs": "logs",
+        "fig": "fig"
+    },
+    "logging": {
+        "use_wandb": false,
+        "wandb_project": "mahjax-ppo"
+    },
+    "pipeline": {
+        "skip_data": false,            // 跳过离线数据收集
+        "skip_bc": false,              // 跳过 BC 预训练
+        "skip_ppo": false              // 跳过 PPO 训练
+    }
+}
+```
+
+**NPU 和 GPU 的 config.json 差异：**
+
+| 字段 | NPU | GPU |
+|------|-----|-----|
+| `env.name` | `red_mahjong` | `no_red_mahjong` |
+| `device.type` | `npu` | `cuda` |
 
 ## 快速开始
 
-### NPU 训练
+### 1. 修改参数
 
 ```bash
-# 一键全流程（离线数据 → BC → PPO）
+vim scripts/train/npu/config.json     # 调参：lr, num_envs, gae_lambda ...
+```
+
+### 2. 一键运行
+
+```bash
+# NPU
 bash scripts/train/npu/run_all.sh
 
-# 或分步执行
-bash scripts/train/npu/run_bc.sh      # BC 预训练
-bash scripts/train/npu/run_ppo.sh     # PPO 训练
-```
-
-### GPU 训练
-
-```bash
-# 一键全流程
+# GPU
 bash scripts/train/gpu/run_all.sh
-
-# 或分步执行
-bash scripts/train/gpu/run_bc.sh
-bash scripts/train/gpu/run_ppo.sh
 ```
 
-## 环境变量控制
-
-每个脚本支持通过环境变量覆盖默认行为：
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `SKIP_DATA` | — | 设为 `1` 跳过离线数据收集 |
-| `SKIP_BC` | — | 设为 `1` 跳过 BC 预训练 |
-| `SKIP_PPO` | — | 设为 `1` 跳过 PPO 训练 |
-| `USE_WANDB` | — | 设为 `1` 启用 wandb 日志 |
-| `SEED` | `0` | 随机种子 |
-| `DEVICE` | `npu:0` / `cuda:0` | 训练设备 |
-| `NUM_ENVS` | `1024` | 并行环境数 |
-| `NUM_STEPS` | `256` | 每次 rollout 步数 |
-| `LR` | `3e-4` | 学习率 |
-| `MAG_COEF` | `0.2` | Magnet 正则化系数 |
-
-### 使用示例
+### 3. 分步执行
 
 ```bash
-# 只跑 PPO（假设已有 BC 模型），多卡 NPU，调高 λ
-SKIP_BC=1 SKIP_DATA=1 DEVICE=npu:1 NUM_ENVS=2048 \
-    bash scripts/train/npu/run_ppo.sh
+bash scripts/train/npu/run_bc.sh      # 只跑 BC
+bash scripts/train/npu/run_ppo.sh     # 只跑 PPO（需要 BC 模型已存在）
+```
 
-# 带 wandb 的全流程，指定 seed
-SEED=42 USE_WANDB=1 bash scripts/train/npu/run_all.sh
+### 4. 跳过某些阶段
 
-# GPU 训练，跳过数据收集（已有数据），调试规模
-SKIP_DATA=1 NUM_ENVS=128 NUM_STEPS=64 SEED=0 \
-    bash scripts/train/gpu/run_all.sh
+在 `config.json` 中设置：
+
+```json
+"pipeline": {
+    "skip_data": false,    // 已有数据，跳过收集
+    "skip_bc": false,      // 已有 BC 模型，跳过预训练
+    "skip_ppo": false
+}
+```
+
+或用环境变量临时覆盖（不影响 config.json）：
+
+```bash
+SKIP_BC=1 bash scripts/train/npu/run_all.sh   # 只跑 PPO
+SKIP_PPO=1 bash scripts/train/npu/run_all.sh  # 只跑 BC
+```
+
+### 5. 常用调参场景
+
+```bash
+# 场景 1：改 dev 参数 → 直接改 config.json
+vim scripts/train/npu/config.json  # 把 num_envs 从 1024 改为 128
+
+# 场景 2：临时换 seed → 环境变量
+SEED=99 bash scripts/train/npu/run_all.sh
+
+# 场景 3：多点实验 → 拷贝配置
+cp scripts/train/npu/config.json scripts/train/npu/config_high_lambda.json
+# 手动修改 gae_lambda，然后用自定义脚本加载
 ```
 
 ## 产物说明
 
-每次训练的中间产物全部存放在对应子目录：
-
 | 目录 | 内容 | 文件格式 |
 |------|------|---------|
-| `offline_data/` | 离线对局数据 | `{env_name}_offline_data.pkl` |
-| `params/` | 模型权重 | `{env_name}_bc_params.pt`（BC）, `{env_name}-seed={N}.pt`（PPO） |
-| `checkpoints/` | PPO 周期快照 | `ppo_ckpt_{update}.pt` |
+| `offline_data/` | 离线对局数据 | `{env}_offline_data.pkl` |
+| `params/` | 模型权重 | NPU: `.pt`, GPU: `.pkl` / `.ckpt` |
+| `checkpoints/` | PPO 周期快照 | NPU: `ppo_ckpt_{N}.pt`, GPU: `ppo_ckpt_{N}.pkl` |
 | `logs/` | 训练日志 | `bc_train.log`, `ppo_train.log` |
 | `fig/` | 可视化 | `*.svg` |
 
-## 恢复训练
-
-```bash
-# 从 checkpoint 恢复 PPO 训练
-cd <PROJECT_ROOT>
-python mahjax_pt/examples/ppo_with_reg.py \
-    --resume_from scripts/train/npu/checkpoints/ppo_ckpt_100.pt \
-    --device npu:0
-```
-
 ## 依赖
 
-- `torch >= 2.0`
-- NPU 训练额外需要 `torch_npu`
-- GPU 训练额外需要 CUDA 版 `torch`
+- `torch >= 2.0`（NPU 训练额外需要 `torch_npu`）
+- `jax >= 0.4.28`（GPU 训练）
 - 可选：`wandb`（日志记录）

@@ -2,108 +2,77 @@
 # ============================================================================
 # PPO 强化学习训练 — NPU 版
 # ============================================================================
-# 依赖：需要先跑 run_bc.sh 生成 BC 预训练模型
-#
+# 配置来源：config.json（同目录下）+ 环境变量覆盖
 # 产出：
-#   checkpoints/ppo_ckpt_*.pt            — 周期 checkpoint（每 eval_interval 步）
-#   params/red_mahjong-seed=0.pt         — 最终模型
-#   logs/ppo_train.log                   — 训练日志
+#   checkpoints/ppo_ckpt_*.pt
+#   params/{env}-seed={N}.pt
+#   logs/ppo_train.log
 # ============================================================================
 set -euo pipefail
 
-# ── 路径配置 ──
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-PARAMS_DIR="${SCRIPT_DIR}/params"
-CKPT_DIR="${SCRIPT_DIR}/checkpoints"
-LOG_DIR="${SCRIPT_DIR}/logs"
+source "${SCRIPT_DIR}/../_common.sh"
+load_config
 
-mkdir -p "${PARAMS_DIR}" "${CKPT_DIR}" "${LOG_DIR}"
+mkdir -p "${CONFIG_ckpt_dir}" "${CONFIG_log_dir}"
 
-PRETRAINED="${PARAMS_DIR}/red_mahjong_bc_params.pt"
-LOG_FILE="${LOG_DIR}/ppo_train.log"
+LOG_FILE="${CONFIG_log_dir}/ppo_train.log"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 参数（可按需修改）
+# 检查 BC 模型
 # ═══════════════════════════════════════════════════════════════════════════
-ENV_NAME="red_mahjong"
-ROUND_MODE="single"
-SEED="${SEED:-0}"
-DEVICE="${DEVICE:-npu:0}"
-
-NUM_ENVS="${NUM_ENVS:-1024}"
-NUM_STEPS="${NUM_STEPS:-256}"
-TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000000}"
-
-LR="${LR:-3e-4}"
-ENT_COEF="${ENT_COEF:-0.01}"
-CLIP_EPS="${CLIP_EPS:-0.2}"
-VF_COEF="${VF_COEF:-0.5}"
-UPDATE_EPOCHS="${UPDATE_EPOCHS:-4}"
-MINIBATCH_SIZE="${MINIBATCH_SIZE:-4096}"
-MAG_COEF="${MAG_COEF:-0.2}"
-
-EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
-EVAL_NUM_ENVS="${EVAL_NUM_ENVS:-1000}"
-
-USE_WANDB="${USE_WANDB:-}"
-WANDB_PROJECT="${WANDB_PROJECT:-mahjax-ppo}"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 检查 BC 模型是否存在
-# ═══════════════════════════════════════════════════════════════════════════
-if [ ! -f "${PRETRAINED}" ]; then
-    echo "[PPO] ERROR: BC pretrained model not found at ${PRETRAINED}"
+if [ ! -f "${CONFIG_bc_model}" ]; then
+    echo "[PPO] ERROR: BC model not found at ${CONFIG_bc_model}"
     echo "[PPO] Please run run_bc.sh first."
     exit 1
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 构建 wandb 参数
+# wandb 参数
 # ═══════════════════════════════════════════════════════════════════════════
 WANDB_ARGS=()
-if [ -n "${USE_WANDB}" ]; then
-    WANDB_ARGS=(--use_wandb --wandb_project "${WANDB_PROJECT}")
+if [ "${CONFIG_logging.use_wandb}" = "true" ]; then
+    WANDB_ARGS=(--use_wandb --wandb_project "${CONFIG_logging.wandb_project}")
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PPO 训练
 # ═══════════════════════════════════════════════════════════════════════════
-echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
-echo "[PPO] Starting PPO training on ${DEVICE}"     | tee -a "${LOG_FILE}"
-echo "  BC model:    ${PRETRAINED}"                 | tee -a "${LOG_FILE}"
-echo "  Checkpoints: ${CKPT_DIR}"                   | tee -a "${LOG_FILE}"
-echo "  Log:         ${LOG_FILE}"                   | tee -a "${LOG_FILE}"
-echo "  Config: seed=${SEED} num_envs=${NUM_ENVS} num_steps=${NUM_STEPS}" | tee -a "${LOG_FILE}"
-echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
+print_config | tee -a "${LOG_FILE}"
+
+echo "[PPO] BC model:    ${CONFIG_bc_model}"      | tee -a "${LOG_FILE}"
+echo "[PPO] Checkpoints: ${CONFIG_ckpt_dir}"      | tee -a "${LOG_FILE}"
+echo "[PPO] Log:         ${LOG_FILE}"             | tee -a "${LOG_FILE}"
+echo ""                                           | tee -a "${LOG_FILE}"
 
 cd "${PROJECT_ROOT}"
 
 python mahjax_pt/examples/ppo_with_reg.py \
-    --env_name "${ENV_NAME}" \
-    --round_mode "${ROUND_MODE}" \
-    --seed "${SEED}" \
-    --device "${DEVICE}" \
-    --num_envs "${NUM_ENVS}" \
-    --num_steps "${NUM_STEPS}" \
-    --total_timesteps "${TOTAL_TIMESTEPS}" \
-    --lr "${LR}" \
-    --ent_coef "${ENT_COEF}" \
-    --clip_eps "${CLIP_EPS}" \
-    --vf_coef "${VF_COEF}" \
-    --update_epochs "${UPDATE_EPOCHS}" \
-    --minibatch_size "${MINIBATCH_SIZE}" \
-    --mag_coef "${MAG_COEF}" \
-    --pretrained_model_path "${PRETRAINED}" \
-    --checkpoint_dir "${CKPT_DIR}" \
-    --eval_interval "${EVAL_INTERVAL}" \
-    --eval_num_envs "${EVAL_NUM_ENVS}" \
+    --env_name "${CONFIG_env.name}" \
+    --round_mode "${CONFIG_env.round_mode}" \
+    --seed "${CONFIG_ppo.seed}" \
+    --device "${CONFIG_device_full}" \
+    --num_envs "${CONFIG_ppo.num_envs}" \
+    --num_steps "${CONFIG_ppo.num_steps}" \
+    --total_timesteps "${CONFIG_ppo.total_timesteps}" \
+    --lr "${CONFIG_ppo.lr}" \
+    --ent_coef "${CONFIG_ppo.ent_coef}" \
+    --clip_eps "${CONFIG_ppo.clip_eps}" \
+    --vf_coef "${CONFIG_ppo.vf_coef}" \
+    --update_epochs "${CONFIG_ppo.update_epochs}" \
+    --minibatch_size "${CONFIG_ppo.minibatch_size}" \
+    --mag_coef "${CONFIG_ppo.mag_coef}" \
+    --pretrained_model_path "${CONFIG_bc_model}" \
+    --checkpoint_dir "${CONFIG_ckpt_dir}" \
+    --eval_interval "${CONFIG_ppo.eval_interval}" \
+    --eval_num_envs "${CONFIG_ppo.eval_num_envs}" \
     "${WANDB_ARGS[@]}" \
     2>&1 | tee -a "${LOG_FILE}"
 
-echo "" | tee -a "${LOG_FILE}"
+echo ""
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
-echo "[PPO] Training finished!"                     | tee -a "${LOG_FILE}"
-echo "  Checkpoints: ${CKPT_DIR}"                  | tee -a "${LOG_FILE}"
-echo "  Log:         ${LOG_FILE}"                  | tee -a "${LOG_FILE}"
+echo "[PPO] Done!"                                   | tee -a "${LOG_FILE}"
+echo "  Checkpoints: ${CONFIG_ckpt_dir}"            | tee -a "${LOG_FILE}"
+echo "  Log:         ${LOG_FILE}"                   | tee -a "${LOG_FILE}"
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"

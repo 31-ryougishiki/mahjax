@@ -2,90 +2,82 @@
 # ============================================================================
 # PPO 强化学习训练 — GPU 版（JAX 路径，原生 GPU 加速）
 # ============================================================================
-# 与 NPU 版不同：GPU 上 JAX 通过 jax.jit + jax.vmap 原生编译 CUDA kernel，
-# 性能优于 PyTorch eager 模式，是 GPU 训练的首选路径。
+# 配置来源：config.json（同目录下）+ 环境变量覆盖
+# JAX 通过 jax.jit + jax.vmap 原生编译 CUDA kernel。
+# CLI 使用 OmegaConf 格式（key=value）。
 #
 # 产出：
-#   checkpoints/ppo_ckpt_*.pkl            — 周期 checkpoint（每 eval_interval 步）
-#   params/{env_name}-seed={N}.ckpt       — 最终模型
-#   logs/ppo_train.log                    — 训练日志
-#   fig/ppo_with_reg_agent_game.svg       — 可视化
+#   checkpoints/ppo_ckpt_*.pkl
+#   params/{env}-seed={N}.ckpt
+#   logs/ppo_train.log
+#   fig/ppo_with_reg_agent_game.svg
 # ============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-PARAMS_DIR="${SCRIPT_DIR}/params"
-CKPT_DIR="${SCRIPT_DIR}/checkpoints"
-LOG_DIR="${SCRIPT_DIR}/logs"
-FIG_DIR="${SCRIPT_DIR}/fig"
+source "${SCRIPT_DIR}/../_common.sh"
+load_config
 
-mkdir -p "${PARAMS_DIR}" "${CKPT_DIR}" "${LOG_DIR}" "${FIG_DIR}"
+mkdir -p "${CONFIG_ckpt_dir}" "${CONFIG_log_dir}" "${CONFIG_fig_dir}"
 
-ENV_NAME="${ENV_NAME:-no_red_mahjong}"
-PRETRAINED="${PARAMS_DIR}/${ENV_NAME}_bc_params.pkl"
-LOG_FILE="${LOG_DIR}/ppo_train.log"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 参数（通过环境变量覆盖）
-# ═══════════════════════════════════════════════════════════════════════════
-SEED="${SEED:-0}"
-ROUND_MODE="${ROUND_MODE:-single}"
-NUM_ENVS="${NUM_ENVS:-1024}"
-NUM_STEPS="${NUM_STEPS:-256}"
-TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000000}"
-LR="${LR:-3e-4}"
-ENT_COEF="${ENT_COEF:-0.01}"
-CLIP_EPS="${CLIP_EPS:-0.2}"
-VF_COEF="${VF_COEF:-0.5}"
-UPDATE_EPOCHS="${UPDATE_EPOCHS:-4}"
-MINIBATCH_SIZE="${MINIBATCH_SIZE:-4096}"
-MAG_COEF="${MAG_COEF:-0.2}"
+LOG_FILE="${CONFIG_log_dir}/ppo_train.log"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 检查 BC 模型
 # ═══════════════════════════════════════════════════════════════════════════
-if [ ! -f "${PRETRAINED}" ]; then
-    echo "[PPO] ERROR: BC pretrained model not found at ${PRETRAINED}"
+if [ ! -f "${CONFIG_bc_model}" ]; then
+    echo "[PPO] ERROR: BC model not found at ${CONFIG_bc_model}"
     echo "[PPO] Please run run_bc.sh first."
     exit 1
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PPO 训练 (JAX 路径)
+# 构建 OmegaConf 参数
 # ═══════════════════════════════════════════════════════════════════════════
-echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
-echo "[PPO] Starting PPO training (JAX, GPU native)" | tee -a "${LOG_FILE}"
-echo "  BC model:    ${PRETRAINED}"                 | tee -a "${LOG_FILE}"
-echo "  Log:         ${LOG_FILE}"                   | tee -a "${LOG_FILE}"
-echo "  Config: seed=${SEED} num_envs=${NUM_ENVS} num_steps=${NUM_STEPS}" | tee -a "${LOG_FILE}"
-echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
+OMEGA_ARGS=(
+    "env_name=${CONFIG_env.name}"
+    "round_mode=${CONFIG_env.round_mode}"
+    "seed=${CONFIG_ppo.seed}"
+    "num_envs=${CONFIG_ppo.num_envs}"
+    "num_steps=${CONFIG_ppo.num_steps}"
+    "total_timesteps=${CONFIG_ppo.total_timesteps}"
+    "lr=${CONFIG_ppo.lr}"
+    "ent_coef=${CONFIG_ppo.ent_coef}"
+    "clip_eps=${CONFIG_ppo.clip_eps}"
+    "vf_coef=${CONFIG_ppo.vf_coef}"
+    "update_epochs=${CONFIG_ppo.update_epochs}"
+    "minibatch_size=${CONFIG_ppo.minibatch_size}"
+    "mag_coef=${CONFIG_ppo.mag_coef}"
+    "pretrained_model_path=${CONFIG_bc_model}"
+    "viz_out_dir=${CONFIG_fig_dir}"
+    "viz_filename=ppo_with_reg_agent_game.svg"
+)
+
+# wandb（JAX 版默认启用，可通过 config 关闭）
+if [ "${CONFIG_logging.use_wandb}" = "true" ]; then
+    OMEGA_ARGS+=("wandb_project=${CONFIG_logging.wandb_project}")
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PPO 训练
+# ═══════════════════════════════════════════════════════════════════════════
+print_config | tee -a "${LOG_FILE}"
+
+echo "[PPO] Backend:   JAX (jax.jit, native CUDA)"  | tee -a "${LOG_FILE}"
+echo "[PPO] BC model:  ${CONFIG_bc_model}"          | tee -a "${LOG_FILE}"
+echo "[PPO] Log:       ${LOG_FILE}"                 | tee -a "${LOG_FILE}"
+echo ""                                             | tee -a "${LOG_FILE}"
 
 cd "${PROJECT_ROOT}"
 
-# JAX PPO 使用 OmegaConf CLI 格式（key=value）
 python examples/ppo_with_reg.py \
-    "env_name=${ENV_NAME}" \
-    "round_mode=${ROUND_MODE}" \
-    "seed=${SEED}" \
-    "num_envs=${NUM_ENVS}" \
-    "num_steps=${NUM_STEPS}" \
-    "total_timesteps=${TOTAL_TIMESTEPS}" \
-    "lr=${LR}" \
-    "ent_coef=${ENT_COEF}" \
-    "clip_eps=${CLIP_EPS}" \
-    "vf_coef=${VF_COEF}" \
-    "update_epochs=${UPDATE_EPOCHS}" \
-    "minibatch_size=${MINIBATCH_SIZE}" \
-    "mag_coef=${MAG_COEF}" \
-    "pretrained_model_path=${PRETRAINED}" \
-    "viz_out_dir=${FIG_DIR}" \
-    "viz_filename=ppo_with_reg_agent_game.svg" \
+    "${OMEGA_ARGS[@]}" \
     2>&1 | tee -a "${LOG_FILE}"
 
-echo "" | tee -a "${LOG_FILE}"
+echo ""
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
-echo "[PPO] Training finished!"                     | tee -a "${LOG_FILE}"
-echo "  Log:  ${LOG_FILE}"                          | tee -a "${LOG_FILE}"
-echo "  Fig:  ${FIG_DIR}"                           | tee -a "${LOG_FILE}"
+echo "[PPO] Done!"                                   | tee -a "${LOG_FILE}"
+echo "  Log: ${LOG_FILE}"                            | tee -a "${LOG_FILE}"
+echo "  Fig: ${CONFIG_fig_dir}"                      | tee -a "${LOG_FILE}"
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"

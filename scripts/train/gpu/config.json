@@ -1,0 +1,51 @@
+{
+    "env": {
+        "name": "no_red_mahjong",
+        "round_mode": "single",
+        "observe_type": "dict"
+    },
+    "device": {
+        "type": "cuda",
+        "id": 0
+    },
+    "bc": {
+        "batch_size": 1024,
+        "lr": 0.0003,
+        "num_epochs": 5,
+        "seed": 42,
+        "val_split": 0.1
+    },
+    "ppo": {
+        "seed": 0,
+        "num_envs": 1024,
+        "num_steps": 256,
+        "total_timesteps": 100000000,
+        "lr": 0.0003,
+        "ent_coef": 0.01,
+        "clip_eps": 0.2,
+        "vf_coef": 0.5,
+        "update_epochs": 4,
+        "minibatch_size": 4096,
+        "mag_coef": 0.2,
+        "gamma": 1.0,
+        "gae_lambda": 0.95,
+        "eval_interval": 10,
+        "eval_num_envs": 1000
+    },
+    "paths": {
+        "offline_data": "offline_data",
+        "params": "params",
+        "checkpoints": "checkpoints",
+        "logs": "logs",
+        "fig": "fig"
+    },
+    "logging": {
+        "use_wandb": false,
+        "wandb_project": "mahjax-ppo"
+    },
+    "pipeline": {
+        "skip_data": false,
+        "skip_bc": false,
+        "skip_ppo": false
+    }
+}

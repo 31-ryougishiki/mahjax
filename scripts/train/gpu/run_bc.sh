@@ -2,61 +2,69 @@
 # ============================================================================
 # BC (Behavior Cloning) 预训练 — GPU 版（JAX 路径）
 # ============================================================================
+# 配置来源：config.json（同目录下）
 # 产出：
-#   offline_data/no_red_mahjong_offline_data.pkl  — 离线数据集
-#   params/no_red_mahjong_bc_params.pkl           — BC 预训练模型
-#   logs/bc_train.log                             — 训练日志
+#   offline_data/{env}_offline_data.pkl
+#   params/{env}_bc_params.pkl
+#   logs/bc_train.log
 # ============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-DATA_DIR="${SCRIPT_DIR}/offline_data"
-PARAMS_DIR="${SCRIPT_DIR}/params"
-LOG_DIR="${SCRIPT_DIR}/logs"
+source "${SCRIPT_DIR}/../_common.sh"
+load_config
 
-mkdir -p "${DATA_DIR}" "${PARAMS_DIR}" "${LOG_DIR}"
+mkdir -p "${CONFIG_dataset%/*}" "${CONFIG_bc_model%/*}" "${CONFIG_log_dir}"
 
-ENV_NAME="${ENV_NAME:-no_red_mahjong}"
-DATASET_PATH="${DATA_DIR}/${ENV_NAME}_offline_data.pkl"
-MODEL_PATH="${PARAMS_DIR}/${ENV_NAME}_bc_params.pkl"
-LOG_FILE="${LOG_DIR}/bc_train.log"
+LOG_FILE="${CONFIG_log_dir}/bc_train.log"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Step 1: Collect offline data
+# Step 1: 收集离线数据（JAX）
 # ═══════════════════════════════════════════════════════════════════════════
-echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
-echo "[BC] Step 1/2: Collecting offline data ..."     | tee -a "${LOG_FILE}"
-echo "  Env:     ${ENV_NAME}"                         | tee -a "${LOG_FILE}"
-echo "  Dataset: ${DATASET_PATH}"                     | tee -a "${LOG_FILE}"
-echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
+if [ "${CONFIG_pipeline.skip_data}" = "true" ]; then
+    echo "[BC] Skipping data collection (skip_data=true in config.json)"
+else
+    echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
+    echo "[BC] Step 1/2: Collecting offline data ..."     | tee -a "${LOG_FILE}"
+    echo "  Env:     ${CONFIG_env.name}"                 | tee -a "${LOG_FILE}"
+    echo "  Dataset: ${CONFIG_dataset}"                  | tee -a "${LOG_FILE}"
+    echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
 
-cd "${PROJECT_ROOT}"
+    cd "${PROJECT_ROOT}"
+    python examples/collect_offline_data.py \
+        "env_name=${CONFIG_env.name}" \
+        "dataset_path=${CONFIG_dataset}" \
+        2>&1 | tee -a "${LOG_FILE}"
 
-python examples/collect_offline_data.py \
-    "env_name=${ENV_NAME}" \
-    "dataset_path=${DATASET_PATH}" \
-    2>&1 | tee -a "${LOG_FILE}"
-
-echo "[BC] Offline data collected." | tee -a "${LOG_FILE}"
+    echo "[BC] Offline data collected." | tee -a "${LOG_FILE}"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Step 2: BC training (JAX)
+# Step 2: BC 训练（JAX）
 # ═══════════════════════════════════════════════════════════════════════════
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
 echo "[BC] Step 2/2: Training BC model (JAX) ..."   | tee -a "${LOG_FILE}"
-echo "  Model:  ${MODEL_PATH}"                     | tee -a "${LOG_FILE}"
+echo "  Model:  ${CONFIG_bc_model}"                | tee -a "${LOG_FILE}"
+echo "  Batch:  ${CONFIG_bc.batch_size}"            | tee -a "${LOG_FILE}"
+echo "  LR:     ${CONFIG_bc.lr}"                    | tee -a "${LOG_FILE}"
+echo "  Epochs: ${CONFIG_bc.num_epochs}"           | tee -a "${LOG_FILE}"
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
 
+cd "${PROJECT_ROOT}"
 python examples/bc.py \
-    "env_name=${ENV_NAME}" \
-    "dataset_path=${DATASET_PATH}" \
-    "save_model_path=${MODEL_PATH}" \
+    "env_name=${CONFIG_env.name}" \
+    "dataset_path=${CONFIG_dataset}" \
+    "save_model_path=${CONFIG_bc_model}" \
+    "batch_size=${CONFIG_bc.batch_size}" \
+    "lr=${CONFIG_bc.lr}" \
+    "num_epochs=${CONFIG_bc.num_epochs}" \
+    "seed=${CONFIG_bc.seed}" \
     2>&1 | tee -a "${LOG_FILE}"
 
-echo "" | tee -a "${LOG_FILE}"
+echo ""
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
-echo "[BC] All done!"                                | tee -a "${LOG_FILE}"
-echo "  Model:  ${MODEL_PATH}"                      | tee -a "${LOG_FILE}"
-echo "  Log:    ${LOG_FILE}"                        | tee -a "${LOG_FILE}"
+echo "[BC] Done!"                                   | tee -a "${LOG_FILE}"
+echo "  Model: ${CONFIG_bc_model}"                 | tee -a "${LOG_FILE}"
+echo "  Log:   ${LOG_FILE}"                         | tee -a "${LOG_FILE}"
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
