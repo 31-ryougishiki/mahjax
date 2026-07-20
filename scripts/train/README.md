@@ -2,6 +2,19 @@
 
 按训练硬件分类的即用型训练脚本。
 
+## 为什么 GPU 用 JAX，NPU 用 PyTorch？
+
+| | GPU (NVIDIA) | NPU (Ascend) |
+|---|---|---|
+| **训练脚本** | `gpu/` 目录 | `npu/` 目录 |
+| **底层框架** | **JAX** | **PyTorch eager** |
+| **环境包** | `mahjax/` | `mahjax_pt/` |
+| **核心优化** | `jax.jit` 编译 CUDA kernel | eager 模式，适配 torch_npu |
+| **速度** | ~1M+ steps/sec | 取决于 NPU 算力 |
+| **CLI 格式** | `key=value` (OmegaConf) | `--key value` (argparse) |
+
+JAX 在 NVIDIA GPU 上能利用 XLA 编译器直接将计算图编译为 CUDA kernel，配合 `jax.vmap` 自动向量化，性能远超 Python 循环的 eager 模式。PyTorch eager 路径的存在是为了支持 JAX 不支持的硬件（如 Ascend NPU）——**如果你有 NVIDIA GPU，请用 `gpu/` 目录下的 JAX 脚本。**
+
 ## 目录结构
 
 ```
