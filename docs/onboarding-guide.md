@@ -193,6 +193,392 @@ mahjax/
 
 ---
 
+## 使用指南：从安装到训练
+
+> **目标**：能跑起来——安装、测试、训练、UI、精度验证的完整实操命令。
+
+### 环境安装
+
+#### 作为用户安装（使用 PyPI 发布版）
+
+```bash
+pip install mahjax
+```
+
+PyPI 包依赖 `jax>=0.4.28`，请根据自己的硬件（CPU/GPU/TPU）安装对应的 `jaxlib`。
+
+#### 作为开发者安装（从源码）
+
+```bash
+git clone https://github.com/nissymori/mahjax.git
+cd mahjax
+pip install -e ".[dev]"
+# 或者用 Makefile：
+make install-dev
+```
+
+`make install-dev` 会安装 dev、lint、typing、test、coverage 五组依赖：
+- **lint**: `ruff>=0.14.11`, `blackdoc>=0.3.9`
+- **typing**: `mypy>=1.19.1`
+- **test**: `pytest>=8.4.2`, `pytest-xdist>=3.8.0`
+- **coverage**: `pytest-cov>=7.0.0`
+- **核心**: `jax>=0.4.28`, `fastapi>=0.128.0`, `svgwrite>=1.4.3`, `uvicorn>=0.39.0`
+
+PyTorch 端需要额外安装 `torch>=2.0`（不作为 pip 依赖自动安装，因为不同硬件的 torch 包名不同）。
+
+---
+
+### JAX 环境基本使用
+
+#### 最简示例（API 对标 Pgx）
+
+```python
+import jax
+import jax.numpy as jnp
+import mahjax
+
+# 创建环境
+env = mahjax.make(
+    "red_mahjong",                         # 或 "no_red_mahjong"
+    round_mode="single",                   # "single" | "east" | "half"
+    observe_type="dict",                   # "dict" (Transformer) | "2D" (CNN, 未完成)
+    order_points=[30, 10, -10, -30],       # 顺位点 (uma)
+    next_round_style="auto",               # "auto" (训练) | "dummy_share" (交互/UI)
+)
+
+# JIT + vmap：批量运行
+batch_size = 10
+init_fn = jax.jit(jax.vmap(env.init))
+step_fn = jax.jit(jax.vmap(env.step))
+obs_fn  = jax.jit(jax.vmap(env.observe))
+
+# 初始化
+rng = jax.random.PRNGKey(0)
+rng, subrng = jax.random.split(rng)
+state = init_fn(jax.random.split(subrng, batch_size))
+
+# 执行一步（tsumogiri）
+rng, subrng = jax.random.split(rng)
+action = jnp.full((batch_size,), mahjax.Action.TSUMOGIRI, dtype=jnp.int32)
+state = step_fn(state, action, jax.random.split(subrng, batch_size))
+
+# 获取观察和奖励
+obs = obs_fn(state)          # Dict 格式，可直接送入 Transformer
+reward = state.rewards       # (batch_size, 4) 每步的即时奖励
+
+# 可视化（仅单个 state，不 batch）
+single_state = env.init(jax.random.PRNGKey(1))
+single_state.save_svg("state.svg", tile_style="bilingual")
+```
+
+#### round_mode 说明
+
+| 模式 | 局数 | 说明 |
+|------|------|------|
+| `"single"` | 1 局 | 单局结束即终止，适合快速实验 |
+| `"east"` | 4 局 | 东风战（tonpuusen），`round_limit=4` |
+| `"half"` | 8 局 | 半庄战（hanchan），`round_limit=8` |
+
+#### next_round_style 说明
+
+| 模式 | 默认 | 适用场景 |
+|------|------|---------|
+| `"auto"` | ✅ | RL 训练：一局结束的 step 返回下一局的 init state，rewards 携带结算奖励 |
+| `"dummy_share"` | | 交互式 UI / mjai 兼容回放：每局结束后需要 4 家各打一个 DUMMY 才能推进 |
+
+---
+
+### PyTorch 环境基本使用
+
+#### 串行模式（正确性验证）
+
+```python
+from mahjax_pt.red_mahjong.env import make
+
+env = make(backend="serial", round_mode="half")
+state = env.init()                         # key=None 自动生成随机种子
+
+# 取合法动作
+mask = state.legal_action_mask
+legal_actions = [i for i, m in enumerate(mask.tolist()) if m]
+
+state = env.step(state, legal_actions[0])  # 单步执行
+obs = env.observe(state)                   # 获取观察
+```
+
+#### 并行模式（GPU/NPU 批量训练）
+
+```python
+from mahjax_pt.red_mahjong.env import make
+
+env = make(backend="parallel", round_mode="half")
+
+# 批量初始化 128 个环境
+batch_state = env.init_batch(num_envs=128, device="cuda")  # 或 "npu" / "cpu"
+
+# 批量执行一步：actions 是 (B,) tensor
+import torch
+actions = torch.randint(0, 37, (128,))
+batch_state = env.step_batch(batch_state, actions)
+
+# 批量观察：直接返回 (B, ...) 张量，无需 stack/unstack
+batch_obs = env.observe_batch(batch_state)
+
+# 自动重置已终止的环境
+batch_state = env.reinit_terminated_batch(batch_state)
+```
+
+---
+
+### 运行测试
+
+#### JAX 环境单元测试（mahjax/）
+
+```bash
+# 全量测试（4 进程并行，含 doctest）
+make test
+
+# 等价于：
+python3 -m pytest -n 4 -vv tests --doctest-modules mahjax --ignore mahjax/experimental
+
+# 带覆盖率报告
+make test-with-codecov
+
+# 只跑赤麻将测试
+python3 -m pytest tests/red_mahjong/ -v
+
+# 只跑无赤麻将测试
+python3 -m pytest tests/no_red_mahjong/ -v
+
+# 只跑某个特定测试
+python3 -m pytest tests/red_mahjong/test_env.py -v
+```
+
+#### PyTorch 精度验证测试（mahjax_pt/）
+
+```bash
+# L1 基础单元测试
+python mahjax_pt/tests/test_cases.py
+
+# L2 JAX ↔ PyTorch 等价测试
+python mahjax_pt/tests/test_exact_parity.py
+
+# L3 Serial ↔ Parallel 等价测试
+python mahjax_pt/tests/test_env_parallel_parity.py
+
+# L4 金数据回放（805 seeds，串行模式）
+python mahjax_pt/tests/replay_pt_against_golden.py
+
+# L4 金数据回放（并行模式，多进程加速）
+python mahjax_pt/tests/replay_parallel_against_golden.py -j 8
+
+# PPO 精度全套
+python mahjax_pt/tests/test_ppo_math_parity.py
+python mahjax_pt/tests/test_ppo_gae_parity.py
+python mahjax_pt/tests/test_ppo_update_parity.py
+python mahjax_pt/tests/test_ppo_acnet_parity.py
+python mahjax_pt/tests/test_ppo_cycle_parity.py
+python mahjax_pt/tests/test_ppo_training_parity.py
+
+# 一键运行所有 PT 测试
+python mahjax_pt/tests/run_tests.py
+```
+
+---
+
+### RL 训练
+
+#### 第一步：收集离线数据（JAX 端）
+
+```bash
+cd examples
+python collect_offline_data.py \
+    env_name=no_red_mahjong \
+    dataset_path=./offline_data/no_red_offline_data.pkl
+```
+
+用 rule_based agent 自对弈，收集 (observation, action, mask) 三元组。
+
+#### 第二步：行为克隆（BC）预训练
+
+```bash
+# JAX 版 BC
+cd examples
+python bc.py \
+    env_name=no_red_mahjong \
+    dataset_path=./offline_data/no_red_offline_data.pkl \
+    batch_size=1024 lr=3e-4 num_epochs=5 seed=42
+
+# PyTorch 版 BC
+cd mahjax_pt
+python examples/bc.py \
+    --env_name red_mahjong \
+    --dataset_path ./data/red_offline_data.pkl \
+    --batch_size 1024 --lr 3e-4 --num_epochs 5
+```
+
+输出：训练好的模型参数文件（`.pkl` 或 `.pt`）。
+
+#### 第三步：PPO 强化学习训练
+
+```bash
+# JAX 版 PPO（使用 wandb 记录日志）
+cd examples
+python ppo_with_reg.py \
+    env_name=no_red_mahjong \
+    round_mode=single \
+    seed=0 \
+    num_envs=1024 num_steps=256 \
+    pretrained_model_path=./params/no_red_mahjong_bc_params.pkl \
+    wandb_project=mahjax-ppo-with-reg
+
+# PyTorch 版 PPO（支持 GPU/NPU 加速）
+cd mahjax_pt
+python examples/ppo_with_reg.py \
+    --env_name red_mahjong \
+    --round_mode single \
+    --seed 0 \
+    --num_envs 1024 --num_steps 256 \
+    --backend parallel \
+    --device cuda \
+    --use_wandb
+```
+
+**关键超参数默认值**（JAX 和 PT 两端一致）：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `num_envs` | 1024 | 并行环境数 |
+| `num_steps` | 256 | 每次 rollout 步数 |
+| `total_timesteps` | 100,000,000 | 总训练步数 |
+| `update_epochs` | 4 | 每轮更新的 epoch 数 |
+| `minibatch_size` | 4096 | 小批次大小 |
+| `gamma` | 1.0 | 折扣因子（全 episode 范围） |
+| `gae_lambda` | 0.95 | GAE λ 参数 |
+| `lr` | 3e-4 | 学习率（AdamW） |
+| `clip_eps` | 0.2 | PPO clip 范围 |
+| `ent_coef` | 0.01 | 熵正则化系数 |
+| `vf_coef` | 0.5 | 价值损失系数 |
+| `mag_coef` | 0.2 | MAGNET 正则化系数 |
+
+---
+
+### 启动 Web UI
+
+```bash
+# 安装后直接启动（默认 agent：rule_based、random）
+uvicorn mahjax.ui.app:create_app --host 0.0.0.0 --port 8000
+
+# 或开发模式（自动重载）
+uvicorn mahjax.ui.app:create_app --host 0.0.0.0 --port 8000 --reload
+```
+
+打开浏览器访问 `http://localhost:8000`，即可：
+- 选择 agent、局数、座位
+- 手动打牌对抗 AI
+- 支持双语牌面切换
+- 查看对局日志和结算摘要
+
+#### 注册自定义 Agent
+
+```python
+# my_ui_app.py
+from pathlib import Path
+from mahjax.ui.app import create_app
+
+app = create_app()
+app.state.manager.registry.load_callable_from_path(
+    file_path=Path("path/to/my_agent.py"),
+    attribute="act",               # 函数名：act(state, rng) -> action_id
+    description="My Custom Agent",
+)
+```
+
+```bash
+uvicorn my_ui_app:app --host 0.0.0.0 --port 8000
+```
+
+---
+
+### 精度验证流程
+
+当你修改了 PyTorch 端代码后，建议按以下顺序验证正确性：
+
+```bash
+# 1. 基础单元（秒级）
+python mahjax_pt/tests/test_cases.py
+
+# 2. JAX ↔ PT 逐函数对比（分钟级）
+python mahjax_pt/tests/test_exact_parity.py
+
+# 3. Serial ↔ Parallel 等价（分钟级）
+python mahjax_pt/tests/test_env_parallel_parity.py
+
+# 4. 环境分支覆盖率（分钟级）
+python mahjax_pt/tests/test_env_branches.py
+
+# 5. 805 seeds 金数据回放（分钟级，多进程）
+python mahjax_pt/tests/replay_pt_against_golden.py -j 8
+
+# 6. 并行版金数据回放
+python mahjax_pt/tests/replay_parallel_against_golden.py -j 8
+
+# 7. PPO 精度全套（分钟级）
+python mahjax_pt/tests/test_ppo_math_parity.py
+python mahjax_pt/tests/test_ppo_gae_parity.py
+python mahjax_pt/tests/test_ppo_update_parity.py
+python mahjax_pt/tests/test_ppo_cycle_parity.py
+python mahjax_pt/tests/test_ppo_training_parity.py
+```
+
+**如果全部通过**：PT 端所有逻辑与 JAX 参考实现一致。
+
+### 录制新的金数据
+
+如果修改了 JAX 端的环境逻辑，需要重新录制金数据：
+
+```bash
+# 录制环境金数据
+python mahjax_pt/tests/record_jax_golden.py --num_seeds 1000
+
+# 录制 ACNet 金数据（float64 精度，用于定位 fp32 漂移）
+python mahjax_pt/tests/record_jax_acnet_golden_f64.py
+
+# 录制 PPO 训练金数据
+python mahjax_pt/tests/record_jax_ppo_golden.py
+```
+
+---
+
+### 代码质量
+
+```bash
+# 格式化（ruff + blackdoc）
+make format
+# 等价于：
+ruff format mahjax
+blackdoc mahjax
+ruff check mahjax --fix
+
+# 静态检查（ruff + mypy）
+make check
+# 等价于：
+ruff format mahjax --check
+blackdoc mahjax --check
+ruff check mahjax
+mypy mahjax
+
+# 清理构建产物
+make clean
+```
+
+配置说明：
+- 行宽：120 字符（`pyproject.toml` 中 `line-length = 120`）
+- Python 最低版本：3.9
+- Ruff 规则：`C90`（mccabe 复杂度，上限 18）、`E`（pycodestyle）、`F`（pyflakes）、`I`（isort）、`W`（pycodestyle warning）
+
+---
+
 ## 阅读路线图
 
 建议按以下七个阶段循序渐进，预估总耗时约 **15-20 小时**（约 3-4 周，每周 4-5 小时）。
@@ -1346,9 +1732,15 @@ class RedMahjongParallel(HandlersMixin, InternalsMixin, Env):
 
 ---
 
-## 建议阅读时间表
+## 建议学习时间表
 
 ```
+Week 0: 使用指南（实操先行）
+        ├── Day 1: pip install + JAX/PyTorch 基本使用 + 跑通测试
+        ├── Day 2: 启动 UI 玩几局 + 跑通 BC 训练
+        └── Day 3: 跑通 PPO 训练 + 精度验证流程
+        产出：能跑起来整个项目，对工作流有感性认识
+
 Week 1: 阶段 1（概念入门）+ 阶段 2（数据模型）
         ├── Day 1-2: 麻将规则 + README + proposal/design
         ├── Day 3-4: constants → tile → action → meld → hand
