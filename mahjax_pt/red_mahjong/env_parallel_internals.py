@@ -177,7 +177,7 @@ class InternalsMixin:
             distances = (torch.arange(P, device=device).unsqueeze(0) - discarded_players.unsqueeze(1)) % 4  # (M, 4)
             distances = torch.where(can_ron_v, distances,
                                     torch.full_like(distances, 9999))
-            next_p = torch.where(multi_ron, torch.argmin(distances, dim=1), next_p)
+            next_p = torch.where(multi_ron, torch.argmin(distances, dim=1).to(torch.int32), next_p)
 
         # ── 8. Apply results ──
         # Envs with responders
