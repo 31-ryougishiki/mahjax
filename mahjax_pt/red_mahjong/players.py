@@ -364,7 +364,7 @@ def rule_based_player_batch(bs, seed=0):
     seven_all = detailed[:, :, 1]    # (B, 34)
     orphan_all = detailed[:, :, 2]   # (B, 34)
 
-    actions = torch.zeros(B, dtype=torch.int32)
+    actions = torch.zeros(B, dtype=torch.int32, device=device)
 
     for i in range(B):
         # ── Per-env lightweight decisions (no shanten recomputation) ──

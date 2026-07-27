@@ -35,6 +35,7 @@ else
     python mahjax_pt/examples/collect_offline_data.py \
         --env_name "${CONFIG_env_name}" \
         --dataset_path "${CONFIG_dataset}" \
+        --device "${CONFIG_device_full}" \
         2>&1 | tee -a "${LOG_FILE}"
 
     echo "[BC] Offline data collected." | tee -a "${LOG_FILE}"

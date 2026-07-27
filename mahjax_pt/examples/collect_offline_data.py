@@ -42,6 +42,7 @@ def collect_data(
     gamma=0.99,
     max_reward=320.0,
     dataset_path=None,
+    device=None,
 ):
     if dataset_path is None:
         dataset_path = default_dataset_path(env_name)
@@ -57,7 +58,7 @@ def collect_data(
     logger.info(f"Initializing {num_envs} environments with seed={seed} (batch)")
     keys = [seed + i for i in range(num_envs)]
     t0 = time.time()
-    states = env.init_batch(keys=keys)
+    states = env.init_batch(keys=keys, device=device)
     logger.info(f"Batch init done in {time.time() - t0:.1f}s")
 
     # ── 3. Collect ──
@@ -226,6 +227,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_steps", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dataset_path", default=None)
+    parser.add_argument("--device", default=None, help="torch device (e.g., 'npu:0', 'cuda:0', 'cpu')")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
