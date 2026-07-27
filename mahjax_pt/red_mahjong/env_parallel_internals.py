@@ -291,7 +291,8 @@ class InternalsMixin:
             masks_K[n_idx[tsumo_ok], Action.TSUMOGIRI] = True
 
             # Self kan (closed + added)
-            cannot_kan = is_haitei[n_idx] | (n_kan_sum[n_idx] >= 4)  # (K2,)
+            cannot_kan = is_haitei[n_idx] | (n_kan_sum[n_idx] >= 4) | \
+                        (meld_counts[n_idx] >= MAX_MELDS_PER_PLAYER)  # (K2,)
             can_kan = ~cannot_kan  # (K2,)
             if can_kan.any():
                 k_idx = n_idx[can_kan]  # (K3,)

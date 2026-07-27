@@ -555,24 +555,10 @@ class HandlersMixin:
 
             # Form melds (src=0 for closed kan)
             c_actions = actions_H[is_closed_H]  # (C,)
-            # For closed kan, target is tile type (0-33), Meld.init_batch handles it
             c_melds = Meld.init_batch(c_actions, c_tt, torch.zeros(C, dtype=torch.int32, device=device))
 
             # Append meld
             c_meld_counts = bs.players.meld_counts[c_idx, c_cps].long()
-            # Debug: log when meld_count is unexpectedly >= 4
-            if (c_meld_counts >= 4).any():
-                bad = torch.where(c_meld_counts >= 4)[0]
-                import logging
-                _log = logging.getLogger("env")
-                _log.error(
-                    f"_selfkan_batch: {len(bad)}/{C} envs have meld_count>=4 "
-                    f"before append! counts={c_meld_counts[bad].tolist()}, "
-                    f"tile_types={c_tt[bad].tolist()}, "
-                    f"cps={c_cps[bad].tolist()}, "
-                    f"env_indices={c_idx[bad].tolist()}, "
-                    f"deck_ix={bs.round_state.next_deck_ix[c_idx[bad]].tolist()}, "
-                    f"actions={c_actions[bad].tolist()}")
             bs.players.melds[c_idx, c_cps, c_meld_counts] = c_melds
             bs.players.meld_counts[c_idx, c_cps] += 1
 
