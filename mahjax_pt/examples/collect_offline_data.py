@@ -83,9 +83,8 @@ def collect_data(
         done_seq = []  # list of (B,) bool tensors
         cp_seq = []    # list of (B,) int tensors
 
+        log_time = time.time()
         for step in range(num_steps):
-            step_start = time.time()
-
             # ── Observe (batched) ──
             obs = env.observe_batch(states)  # dict of (B, ...) tensors
 
@@ -113,11 +112,13 @@ def collect_data(
             if term_count > 0:
                 states = env.reinit_terminated_batch(states)
 
-            step_elapsed = time.time() - step_start
-            if step > 0 and step % 8 == 0:
+            # Log every 8 steps, measuring the 8-step window
+            if step % 8 == 0 and step > 0:
+                elapsed = time.time() - log_time
                 logger.info(f"  Chunk {chunk_idx+1}/{num_chunks} step {step}/{num_steps} "
-                           f"({step_elapsed:.2f}s for 8 steps, ~{step_elapsed/8*1000:.0f}ms/step "
+                           f"({elapsed:.1f}s for 8 steps, ~{elapsed/8*1000:.0f}ms/step "
                            f"| {term_count} resets)")
+                log_time = time.time()
 
         # ── GAE (vectorized across batch) ──
         T, B = num_steps, num_envs
