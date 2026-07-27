@@ -84,16 +84,23 @@ def collect_data(
         cp_seq = []    # list of (B,) int tensors
 
         log_time = time.time()
+        acc_observe = acc_player = acc_step = acc_reinit = 0.0
         for step in range(num_steps):
             # ── Observe (batched) ──
+            t0 = time.time()
             obs = env.observe_batch(states)  # dict of (B, ...) tensors
+            acc_observe += time.time() - t0
 
             # ── Player actions (batched, no per-env unstack) ──
+            t0 = time.time()
             actions_t = rule_based_player_batch(
                 states, seed=seed + chunk_idx * 10000 + step * num_envs)
+            acc_player += time.time() - t0
 
             # ── Step (batched) ──
+            t0 = time.time()
             states = env.step_batch(states, actions_t)
+            acc_step += time.time() - t0
 
             # ── Collect transition data ──
             done = states.terminated | states.truncated
@@ -108,17 +115,24 @@ def collect_data(
             cp_seq.append(states.current_player.clone())
 
             # ── Reinit terminated envs ──
+            t0 = time.time()
             term_count = done.sum().item()
             if term_count > 0:
                 states = env.reinit_terminated_batch(states)
+            acc_reinit += time.time() - t0
 
-            # Log every 8 steps, measuring the 8-step window
+            # Log every 8 steps with breakdown
             if step % 8 == 0 and step > 0:
                 elapsed = time.time() - log_time
-                logger.info(f"  Chunk {chunk_idx+1}/{num_chunks} step {step}/{num_steps} "
-                           f"({elapsed:.1f}s for 8 steps, ~{elapsed/8*1000:.0f}ms/step "
-                           f"| {term_count} resets)")
+                logger.info(
+                    f"  Chunk {chunk_idx+1}/{num_chunks} step {step}/{num_steps} "
+                    f"({elapsed:.1f}s/8steps, ~{elapsed/8*1000:.0f}ms/step "
+                    f"| {term_count} resets)")
+                logger.info(
+                    f"    observe={acc_observe:.1f}s player={acc_player:.1f}s "
+                    f"step={acc_step:.1f}s reinit={acc_reinit:.1f}s")
                 log_time = time.time()
+                acc_observe = acc_player = acc_step = acc_reinit = 0.0
 
         # ── GAE (vectorized across batch) ──
         T, B = num_steps, num_envs
