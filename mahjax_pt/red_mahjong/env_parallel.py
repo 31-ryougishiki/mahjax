@@ -47,6 +47,19 @@ from .env_parallel_internals import InternalsMixin, _copy_dataclass_row
 from .env_parallel_handlers import HandlersMixin
 
 
+def _auto_detect_device() -> torch.device:
+    """Auto-detect the best available accelerator device."""
+    try:
+        import torch_npu  # noqa: F401
+    except ImportError:
+        pass
+    if hasattr(torch, 'npu') and torch.npu.is_available():
+        return torch.device("npu:0")
+    if torch.cuda.is_available():
+        return torch.device("cuda:0")
+    return torch.device("cpu")
+
+
 def _batch_state_to_device(bs: BatchState, device: torch.device) -> BatchState:
     """Move all tensors in a BatchState to the target device (recursively)."""
     changes = {}
@@ -153,8 +166,12 @@ class RedMahjongParallel(HandlersMixin, InternalsMixin, Env):
         Args:
             keys: List of seeds/Generators, or None to auto-generate.
             num_envs: Number of environments (used if keys is None).
-            device: torch.device for output tensors (default: cpu).
+            device: torch.device for output tensors (default: auto-detect).
         """
+        if device is None:
+            device = _auto_detect_device()
+        else:
+            device = torch.device(device)
         if keys is None:
             if num_envs is None:
                 raise ValueError("Either keys or num_envs must be provided")
@@ -166,10 +183,8 @@ class RedMahjongParallel(HandlersMixin, InternalsMixin, Env):
                 raise ValueError(f"keys length {B} != num_envs {num_envs}")
         states = [self._serial.init(key=k) for k in keys]
         bs = stack_states(states)
-        if device is not None:
-            device = torch.device(device)
-            if device.type != 'cpu':
-                bs = _batch_state_to_device(bs, device)
+        if device.type != 'cpu':
+            bs = _batch_state_to_device(bs, device)
         return bs
 
     # ── step (single) ──

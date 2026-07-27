@@ -59,7 +59,8 @@ def collect_data(
     keys = [seed + i for i in range(num_envs)]
     t0 = time.time()
     states = env.init_batch(keys=keys, device=device)
-    logger.info(f"Batch init done in {time.time() - t0:.1f}s")
+    logger.info(f"Batch init done in {time.time() - t0:.1f}s "
+                f"| device={states.players.hand.device}")
 
     # ── 3. Collect ──
     chunk_size = num_envs * num_steps
