@@ -321,7 +321,9 @@ class RedMahjongParallel(HandlersMixin, InternalsMixin, Env):
         is_any_discard = is_discard | is_tsumogiri
 
         # ── 4. Process actions in game-logic order ──
-        if self._perf is not None:
+        if profile:
+            if self._perf is None:
+                self._perf = {}
             _t = _time.time
             _p = self._perf
             def _timed(name, fn, *args):
