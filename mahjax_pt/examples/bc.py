@@ -48,8 +48,9 @@ def train_bc(
 
     # 1. Load data
     if not os.path.exists(dataset_path):
-        print(f"Dataset not found: {dataset_path}")
-        return
+        print(f"[ERROR] Dataset not found: {dataset_path}")
+        print("[ERROR] Please run data collection first (set skip_data=false in config.json).")
+        sys.exit(1)
 
     with open(dataset_path, "rb") as f:
         data = pickle.load(f)
