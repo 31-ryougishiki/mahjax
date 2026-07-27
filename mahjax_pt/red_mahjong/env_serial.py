@@ -288,15 +288,10 @@ class RedMahjongSerial(Env):
         gc = self.game_config
         state.round_state.round_limit = self.round_limit
 
-        # Build wall: 4 copies of each tile type
-        deck_values = []
-        for t in range(34):
-            for _ in range(4):
-                deck_values.append(t)
-
-        deck = torch.tensor(deck_values, dtype=torch.int8)
+        # Build wall: 136 physical tile IDs → map to tile index (0-36, with red fives)
+        tile_ids = torch.arange(136, dtype=torch.int32)
         perm = torch.randperm(136, generator=gen)
-        deck = deck[perm]
+        deck = Tile.from_tile_id_to_tile(tile_ids[perm]).to(torch.int8)
 
         state.round_state.deck = deck
         state.round_state.next_deck_ix = FIRST_DRAW_IDX  # 83

@@ -54,11 +54,13 @@ class MultiHeadSelfAttention(nn.Module):
         k = self.k_proj(x).view(B, T, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = self.v_proj(x).view(B, T, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        # Build SDPA-compatible attn_mask: (B, 1, 1, T) boolean, True=keep
+        # Build SDPA-compatible attn_mask: (B, 1, T, T) boolean, True=keep
+        # NPU FlashAttention requires [B, 1, Sq, Skv] shape, not [B, 1, 1, Skv].
         attn_mask = None
         if mask is not None:
             if mask.dim() == 2:
-                attn_mask = mask[:, None, None, :].bool()  # (B, 1, 1, T)
+                B_m, T_m = mask.shape
+                attn_mask = mask[:, None, None, :].expand(B_m, 1, T_m, T_m).bool()
             else:
                 attn_mask = mask.bool()
 
