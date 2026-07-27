@@ -28,9 +28,9 @@ def flatten(obj, prefix=''):
     items = []
     if isinstance(obj, dict):
         for k, v in obj.items():
-            items.extend(flatten(v, prefix + k + '.'))
+            items.extend(flatten(v, prefix + k + '_'))
     else:
-        key = prefix.rstrip('.')
+        key = prefix.rstrip('_')
         if isinstance(obj, bool):
             val = 'true' if obj else 'false'
         elif isinstance(obj, str):
@@ -48,25 +48,25 @@ PYEOF
 )"
 
     # ── 派生路径 ──
-    CONFIG_device_full="${CONFIG_device.type}:${CONFIG_device.id}"
+    CONFIG_device_full="${CONFIG_device_type}:${CONFIG_device_id}"
 
     # BC 模型格式：NPU 用 .pt（PyTorch），GPU 用 .pkl（JAX flax）
     local ext="pkl"
-    [ "${CONFIG_device.type}" = "npu" ] && ext="pt"
-    CONFIG_bc_model="${SCRIPT_DIR}/${CONFIG_paths.params}/${CONFIG_env.name}_bc_params.${ext}"
+    [ "${CONFIG_device_type}" = "npu" ] && ext="pt"
+    CONFIG_bc_model="${SCRIPT_DIR}/${CONFIG_paths_params}/${CONFIG_env_name}_bc_params.${ext}"
 
-    CONFIG_dataset="${SCRIPT_DIR}/${CONFIG_paths.offline_data}/${CONFIG_env.name}_offline_data.pkl"
-    CONFIG_ckpt_dir="${SCRIPT_DIR}/${CONFIG_paths.checkpoints}"
-    CONFIG_log_dir="${SCRIPT_DIR}/${CONFIG_paths.logs}"
-    CONFIG_fig_dir="${SCRIPT_DIR}/${CONFIG_paths.fig}"
+    CONFIG_dataset="${SCRIPT_DIR}/${CONFIG_paths_offline_data}/${CONFIG_env_name}_offline_data.pkl"
+    CONFIG_ckpt_dir="${SCRIPT_DIR}/${CONFIG_paths_checkpoints}"
+    CONFIG_log_dir="${SCRIPT_DIR}/${CONFIG_paths_logs}"
+    CONFIG_fig_dir="${SCRIPT_DIR}/${CONFIG_paths_fig}"
 
     # ── 环境变量覆盖（向后兼容） ──
-    CONFIG_ppo.seed="${SEED:-${CONFIG_ppo.seed}}"
+    CONFIG_ppo_seed="${SEED:-${CONFIG_ppo_seed}}"
     CONFIG_device_full="${DEVICE:-${CONFIG_device_full}}"
-    CONFIG_pipeline.skip_data="${SKIP_DATA:-${CONFIG_pipeline.skip_data}}"
-    CONFIG_pipeline.skip_bc="${SKIP_BC:-${CONFIG_pipeline.skip_bc}}"
-    CONFIG_pipeline.skip_ppo="${SKIP_PPO:-${CONFIG_pipeline.skip_ppo}}"
-    CONFIG_logging.use_wandb="${USE_WANDB:-${CONFIG_logging.use_wandb}}"
+    CONFIG_pipeline_skip_data="${SKIP_DATA:-${CONFIG_pipeline_skip_data}}"
+    CONFIG_pipeline_skip_bc="${SKIP_BC:-${CONFIG_pipeline_skip_bc}}"
+    CONFIG_pipeline_skip_ppo="${SKIP_PPO:-${CONFIG_pipeline_skip_ppo}}"
+    CONFIG_logging_use_wandb="${USE_WANDB:-${CONFIG_logging_use_wandb}}"
 }
 
 # ── 打印当前配置 ──
@@ -75,16 +75,16 @@ print_config() {
     echo "════════════════════════════════════════════"
     echo "  Configuration (config.json)"
     echo "════════════════════════════════════════════"
-    echo "  env:           ${CONFIG_env.name}"
-    echo "  round_mode:    ${CONFIG_env.round_mode}"
+    echo "  env:           ${CONFIG_env_name}"
+    echo "  round_mode:    ${CONFIG_env_round_mode}"
     echo "  device:        ${CONFIG_device_full}"
-    echo "  num_envs:      ${CONFIG_ppo.num_envs}"
-    echo "  num_steps:     ${CONFIG_ppo.num_steps}"
-    echo "  total_steps:   ${CONFIG_ppo.total_timesteps}"
-    echo "  lr:            ${CONFIG_ppo.lr}"
-    echo "  seed:          ${CONFIG_ppo.seed}"
-    echo "  gae_lambda:    ${CONFIG_ppo.gae_lambda}"
-    echo "  use_wandb:     ${CONFIG_logging.use_wandb}"
+    echo "  num_envs:      ${CONFIG_ppo_num_envs}"
+    echo "  num_steps:     ${CONFIG_ppo_num_steps}"
+    echo "  total_steps:   ${CONFIG_ppo_total_timesteps}"
+    echo "  lr:            ${CONFIG_ppo_lr}"
+    echo "  seed:          ${CONFIG_ppo_seed}"
+    echo "  gae_lambda:    ${CONFIG_ppo_gae_lambda}"
+    echo "  use_wandb:     ${CONFIG_logging_use_wandb}"
     echo "════════════════════════════════════════════"
     echo ""
 }

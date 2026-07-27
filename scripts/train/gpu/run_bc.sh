@@ -22,18 +22,18 @@ LOG_FILE="${CONFIG_log_dir}/bc_train.log"
 # ═══════════════════════════════════════════════════════════════════════════
 # Step 1: 收集离线数据（JAX）
 # ═══════════════════════════════════════════════════════════════════════════
-if [ "${CONFIG_pipeline.skip_data}" = "true" ]; then
+if [ "${CONFIG_pipeline_skip_data}" = "true" ]; then
     echo "[BC] Skipping data collection (skip_data=true in config.json)"
 else
     echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
     echo "[BC] Step 1/2: Collecting offline data ..."     | tee -a "${LOG_FILE}"
-    echo "  Env:     ${CONFIG_env.name}"                 | tee -a "${LOG_FILE}"
+    echo "  Env:     ${CONFIG_env_name}"                 | tee -a "${LOG_FILE}"
     echo "  Dataset: ${CONFIG_dataset}"                  | tee -a "${LOG_FILE}"
     echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
 
     cd "${PROJECT_ROOT}"
     python examples/collect_offline_data.py \
-        "env_name=${CONFIG_env.name}" \
+        "env_name=${CONFIG_env_name}" \
         "dataset_path=${CONFIG_dataset}" \
         2>&1 | tee -a "${LOG_FILE}"
 
@@ -46,20 +46,20 @@ fi
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
 echo "[BC] Step 2/2: Training BC model (JAX) ..."   | tee -a "${LOG_FILE}"
 echo "  Model:  ${CONFIG_bc_model}"                | tee -a "${LOG_FILE}"
-echo "  Batch:  ${CONFIG_bc.batch_size}"            | tee -a "${LOG_FILE}"
-echo "  LR:     ${CONFIG_bc.lr}"                    | tee -a "${LOG_FILE}"
-echo "  Epochs: ${CONFIG_bc.num_epochs}"           | tee -a "${LOG_FILE}"
+echo "  Batch:  ${CONFIG_bc_batch_size}"            | tee -a "${LOG_FILE}"
+echo "  LR:     ${CONFIG_bc_lr}"                    | tee -a "${LOG_FILE}"
+echo "  Epochs: ${CONFIG_bc_num_epochs}"           | tee -a "${LOG_FILE}"
 echo "════════════════════════════════════════════" | tee -a "${LOG_FILE}"
 
 cd "${PROJECT_ROOT}"
 python examples/bc.py \
-    "env_name=${CONFIG_env.name}" \
+    "env_name=${CONFIG_env_name}" \
     "dataset_path=${CONFIG_dataset}" \
     "save_model_path=${CONFIG_bc_model}" \
-    "batch_size=${CONFIG_bc.batch_size}" \
-    "lr=${CONFIG_bc.lr}" \
-    "num_epochs=${CONFIG_bc.num_epochs}" \
-    "seed=${CONFIG_bc.seed}" \
+    "batch_size=${CONFIG_bc_batch_size}" \
+    "lr=${CONFIG_bc_lr}" \
+    "num_epochs=${CONFIG_bc_num_epochs}" \
+    "seed=${CONFIG_bc_seed}" \
     2>&1 | tee -a "${LOG_FILE}"
 
 echo ""

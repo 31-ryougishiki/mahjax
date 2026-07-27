@@ -32,8 +32,8 @@ fi
 # wandb 参数
 # ═══════════════════════════════════════════════════════════════════════════
 WANDB_ARGS=()
-if [ "${CONFIG_logging.use_wandb}" = "true" ]; then
-    WANDB_ARGS=(--use_wandb --wandb_project "${CONFIG_logging.wandb_project}")
+if [ "${CONFIG_logging_use_wandb}" = "true" ]; then
+    WANDB_ARGS=(--use_wandb --wandb_project "${CONFIG_logging_wandb_project}")
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -49,24 +49,24 @@ echo ""                                           | tee -a "${LOG_FILE}"
 cd "${PROJECT_ROOT}"
 
 python mahjax_pt/examples/ppo_with_reg.py \
-    --env_name "${CONFIG_env.name}" \
-    --round_mode "${CONFIG_env.round_mode}" \
-    --seed "${CONFIG_ppo.seed}" \
+    --env_name "${CONFIG_env_name}" \
+    --round_mode "${CONFIG_env_round_mode}" \
+    --seed "${CONFIG_ppo_seed}" \
     --device "${CONFIG_device_full}" \
-    --num_envs "${CONFIG_ppo.num_envs}" \
-    --num_steps "${CONFIG_ppo.num_steps}" \
-    --total_timesteps "${CONFIG_ppo.total_timesteps}" \
-    --lr "${CONFIG_ppo.lr}" \
-    --ent_coef "${CONFIG_ppo.ent_coef}" \
-    --clip_eps "${CONFIG_ppo.clip_eps}" \
-    --vf_coef "${CONFIG_ppo.vf_coef}" \
-    --update_epochs "${CONFIG_ppo.update_epochs}" \
-    --minibatch_size "${CONFIG_ppo.minibatch_size}" \
-    --mag_coef "${CONFIG_ppo.mag_coef}" \
+    --num_envs "${CONFIG_ppo_num_envs}" \
+    --num_steps "${CONFIG_ppo_num_steps}" \
+    --total_timesteps "${CONFIG_ppo_total_timesteps}" \
+    --lr "${CONFIG_ppo_lr}" \
+    --ent_coef "${CONFIG_ppo_ent_coef}" \
+    --clip_eps "${CONFIG_ppo_clip_eps}" \
+    --vf_coef "${CONFIG_ppo_vf_coef}" \
+    --update_epochs "${CONFIG_ppo_update_epochs}" \
+    --minibatch_size "${CONFIG_ppo_minibatch_size}" \
+    --mag_coef "${CONFIG_ppo_mag_coef}" \
     --pretrained_model_path "${CONFIG_bc_model}" \
     --checkpoint_dir "${CONFIG_ckpt_dir}" \
-    --eval_interval "${CONFIG_ppo.eval_interval}" \
-    --eval_num_envs "${CONFIG_ppo.eval_num_envs}" \
+    --eval_interval "${CONFIG_ppo_eval_interval}" \
+    --eval_num_envs "${CONFIG_ppo_eval_num_envs}" \
     "${WANDB_ARGS[@]}" \
     2>&1 | tee -a "${LOG_FILE}"
 

@@ -36,27 +36,27 @@ fi
 # 构建 OmegaConf 参数
 # ═══════════════════════════════════════════════════════════════════════════
 OMEGA_ARGS=(
-    "env_name=${CONFIG_env.name}"
-    "round_mode=${CONFIG_env.round_mode}"
-    "seed=${CONFIG_ppo.seed}"
-    "num_envs=${CONFIG_ppo.num_envs}"
-    "num_steps=${CONFIG_ppo.num_steps}"
-    "total_timesteps=${CONFIG_ppo.total_timesteps}"
-    "lr=${CONFIG_ppo.lr}"
-    "ent_coef=${CONFIG_ppo.ent_coef}"
-    "clip_eps=${CONFIG_ppo.clip_eps}"
-    "vf_coef=${CONFIG_ppo.vf_coef}"
-    "update_epochs=${CONFIG_ppo.update_epochs}"
-    "minibatch_size=${CONFIG_ppo.minibatch_size}"
-    "mag_coef=${CONFIG_ppo.mag_coef}"
+    "env_name=${CONFIG_env_name}"
+    "round_mode=${CONFIG_env_round_mode}"
+    "seed=${CONFIG_ppo_seed}"
+    "num_envs=${CONFIG_ppo_num_envs}"
+    "num_steps=${CONFIG_ppo_num_steps}"
+    "total_timesteps=${CONFIG_ppo_total_timesteps}"
+    "lr=${CONFIG_ppo_lr}"
+    "ent_coef=${CONFIG_ppo_ent_coef}"
+    "clip_eps=${CONFIG_ppo_clip_eps}"
+    "vf_coef=${CONFIG_ppo_vf_coef}"
+    "update_epochs=${CONFIG_ppo_update_epochs}"
+    "minibatch_size=${CONFIG_ppo_minibatch_size}"
+    "mag_coef=${CONFIG_ppo_mag_coef}"
     "pretrained_model_path=${CONFIG_bc_model}"
     "viz_out_dir=${CONFIG_fig_dir}"
     "viz_filename=ppo_with_reg_agent_game.svg"
 )
 
 # wandb（JAX 版默认启用，可通过 config 关闭）
-if [ "${CONFIG_logging.use_wandb}" = "true" ]; then
-    OMEGA_ARGS+=("wandb_project=${CONFIG_logging.wandb_project}")
+if [ "${CONFIG_logging_use_wandb}" = "true" ]; then
+    OMEGA_ARGS+=("wandb_project=${CONFIG_logging_wandb_project}")
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════

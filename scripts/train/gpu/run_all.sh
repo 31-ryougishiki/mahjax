@@ -24,7 +24,7 @@ print_config
 # ═══════════════════════════════════════════════════════════════════════════
 # Step 1: BC
 # ═══════════════════════════════════════════════════════════════════════════
-if [ "${CONFIG_pipeline.skip_bc}" = "true" ]; then
+if [ "${CONFIG_pipeline_skip_bc}" = "true" ]; then
     echo "[Pipeline] Skipping BC (skip_bc=true)"
 else
     bash "${SCRIPT_DIR}/run_bc.sh"
@@ -33,7 +33,7 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════
 # Step 2: PPO
 # ═══════════════════════════════════════════════════════════════════════════
-if [ "${CONFIG_pipeline.skip_ppo}" = "true" ]; then
+if [ "${CONFIG_pipeline_skip_ppo}" = "true" ]; then
     echo "[Pipeline] Skipping PPO (skip_ppo=true)"
 else
     bash "${SCRIPT_DIR}/run_ppo.sh"
