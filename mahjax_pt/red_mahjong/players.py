@@ -353,6 +353,10 @@ def rule_based_player_batch(bs, seed=0):
     cp = bs.current_player  # (B,)
     b_idx = torch.arange(B, device=device)
 
+    # Move module-level constants to target device
+    _pm = PRIORITY_MASK.to(device)
+    _om = OUTSIDE_MASK.to(device)
+
     # ═══ Batch: extract current-player hand data ═══
     hand_with_red = bs.players.hand_with_red[b_idx, cp]  # (B, 37)
     hands_34 = Hand.to_34_batch(hand_with_red)            # (B, 34)
@@ -406,7 +410,7 @@ def rule_based_player_batch(bs, seed=0):
 
         # ── Discard selection ──
         best_mask = shantens == best_shanten
-        priority = best_mask.int() * PRIORITY_MASK * (h_34 > 0).int()
+        priority = best_mask.int() * _pm * (h_34 > 0).int()
         best_discard = int(torch.argmax(priority).item())
 
         # Tenpai waiting
@@ -462,7 +466,7 @@ def rule_based_player_batch(bs, seed=0):
             has_pung = h_34[target_type] >= 3
 
             if is_chi:
-                basic_prob = float((h_34.int() * (1 - OUTSIDE_MASK)).sum().item()) * BASIC_CHI_PROB
+                basic_prob = float((h_34.int() * (1 - _om)).sum().item()) * BASIC_CHI_PROB
                 prob = YAKU_MELD_CHI_PROB if is_yaku_meld else basic_prob
                 prob = HAS_PUNG_CHI_PROB if has_pung else prob
                 if py_random.random() < float(prob):
@@ -476,7 +480,7 @@ def rule_based_player_batch(bs, seed=0):
                         action = _categorical_logits(chi_logits)
 
             if is_pon:
-                basic_prob = float((h_34.int() * (1 - OUTSIDE_MASK)).sum().item()) * BASIC_PON_PROB
+                basic_prob = float((h_34.int() * (1 - _om)).sum().item()) * BASIC_PON_PROB
                 prob = YAKU_PON_PROB if is_yaku else basic_prob
                 prob = YAKU_MELD_PON_PROB if is_yaku_meld else prob
                 prob = HAS_PUNG_PON_PROB if has_pung else prob
