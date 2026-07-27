@@ -290,8 +290,8 @@ class River:
         tile_u16 = tile_u16 & ~_SRC_MASK
         tile_u16 = tile_u16 & ~_MT_MASK
         tile_u16 = tile_u16 | _BIT_GRAY
-        tile_u16 = tile_u16 | ((srcs.int() & 0b11) << _SRC_SHIFT)
-        tile_u16 = tile_u16 | ((mt.int() & 0b111) << _MT_SHIFT)
+        tile_u16 = tile_u16 | ((srcs.int() & 0b11) * 512)   # << 9
+        tile_u16 = tile_u16 | ((mt.int() & 0b111) * 2048)    # << 11
 
         rivers = rivers.clone()
         rivers[batch_idx, players.long(), safe_idxs] = tile_u16

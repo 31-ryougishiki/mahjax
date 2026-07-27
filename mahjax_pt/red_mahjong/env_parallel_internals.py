@@ -565,7 +565,7 @@ class InternalsMixin:
         fu_i = fu.to(torch.int32)
 
         # Yakuman: fu == 0 → base = 8000 * fan
-        raw = fu_i * (1 << (fan_i + 2))  # (H,)
+        raw = fu_i * (2.0 ** (fan_i + 2).float()).to(fu_i.dtype)  # (H,)
         idx = (fan_i - 4).clamp(0, 11)  # (H,)
         capped = SCORES[idx]  # (H,)
 

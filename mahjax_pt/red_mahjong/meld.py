@@ -254,8 +254,9 @@ class Meld:
         """Vectorized: (B,) actions/targets/srcs → (B,) int32 packed meld."""
         target_tt = Tile.to_tile_type_tensor(targets)
         is_red = Tile.is_tile_red_batch(targets).to(torch.int32)
-        return ((is_red << 15) | ((srcs.int() & 0b11) << 13) |
-                ((target_tt.int() & 0b111111) << 7) | (actions.int() & 0b1111111)).to(torch.int32)
+        # Use * (2**n) instead of << to avoid bitwise_left_shift NPU fallback
+        return ((is_red * 32768) | ((srcs.int() & 0b11) * 8192) |
+                ((target_tt.int() & 0b111111) * 128) | (actions.int() & 0b1111111)).to(torch.int32)
 
     @staticmethod
     def is_empty_batch(melds):
@@ -341,7 +342,9 @@ class Meld:
         is_pung = ((a == Action.PON) | (a == Action.PON_RED) | (a == Action.OPEN_KAN) |
                     ((a >= 37) & (a < 71)))
         suited = target < 27
-        bit = torch.where(suited & is_pung, 1 << target, torch.zeros_like(melds))
+        bit = torch.where(suited & is_pung,
+                          (2.0 ** target.float()).to(torch.int32),
+                          torch.zeros_like(melds))
         return torch.where(empty, torch.zeros_like(melds), bit)
 
     @staticmethod
@@ -353,7 +356,9 @@ class Meld:
         target = (melds >> 7) & 0b111111
         chi_idx = Meld._chi_index_batch(action)
         pos = target - chi_idx
-        return torch.where(is_chi & ~empty, 1 << pos, torch.zeros_like(melds))
+        return torch.where(is_chi & ~empty,
+                          (2.0 ** pos.float()).to(torch.int32),
+                          torch.zeros_like(melds))
 
     @staticmethod
     def fu_batch(melds):

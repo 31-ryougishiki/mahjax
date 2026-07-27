@@ -440,7 +440,7 @@ class Yaku:
         outside_flag = Yaku.outside_batch(codes)  # (B, 3)
         ng = Yaku.nine_gates_batch(codes)      # (B, 3)
 
-        open_end = ((chow ^ (chow & 1)) << 2) | (chow ^ (chow & 0b1000000))
+        open_end = ((chow ^ (chow & 1)) * 4) | (chow ^ (chow & 0b1000000))  # *4 replaces <<2
 
         in_range = (suit == (last_tile_type // 9)).unsqueeze(1)  # (B, 1) → broadcast
         pos = last_tile_type % 9  # (B,)
@@ -455,9 +455,10 @@ class Yaku:
         # Double chow count
         n_double_chow = n_double_chow + n_dc
 
-        # Accumulate chow / pung bits
-        all_chow = all_chow | (chow << (9 * suit))
-        all_pung = all_pung | (pung << (9 * suit))
+        # Accumulate chow / pung bits (use * to avoid bitwise_left_shift NPU fallback)
+        suit_shift = (2.0 ** (9 * suit).float()).to(torch.int32).unsqueeze(1)  # (B, 1)
+        all_chow = all_chow | (chow * suit_shift)
+        all_pung = all_pung | (pung * suit_shift)
 
         chow_range = chow | (chow << 1) | (chow << 2)
         loss = is_ron.unsqueeze(1) & in_range & (((chow_range >> pos.unsqueeze(1)) & 1) == 0) & (((pung >> pos.unsqueeze(1)) & 1) == 1)
