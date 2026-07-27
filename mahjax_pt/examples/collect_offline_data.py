@@ -20,8 +20,7 @@ import numpy as np
 import torch
 
 from mahjax_pt.red_mahjong.env import make as make_env
-from mahjax_pt.red_mahjong.batch_state import unstack_state
-from mahjax_pt.red_mahjong.players import rule_based_player
+from mahjax_pt.red_mahjong.players import rule_based_player_batch
 from mahjax_pt.examples.common import default_dataset_path, attach_dataset_metadata
 
 # ── Logging setup ──────────────────────────────────────────────
@@ -90,16 +89,9 @@ def collect_data(
             # ── Observe (batched) ──
             obs = env.observe_batch(states)  # dict of (B, ...) tensors
 
-            # ── Player actions (per-env, using unstack_state) ──
-            B = states.B
-            actions = []
-            for i in range(B):
-                s = unstack_state(states, i)
-                g = torch.Generator().manual_seed(
-                    seed + chunk_idx * 10000 + step * num_envs + i)
-                action = rule_based_player(s, g)
-                actions.append(action)
-            actions_t = torch.tensor(actions, dtype=torch.int32)
+            # ── Player actions (batched, no per-env unstack) ──
+            actions_t = rule_based_player_batch(
+                states, seed=seed + chunk_idx * 10000 + step * num_envs)
 
             # ── Step (batched) ──
             states = env.step_batch(states, actions_t)

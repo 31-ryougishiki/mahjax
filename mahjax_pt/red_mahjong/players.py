@@ -337,3 +337,165 @@ def random_player(state, rng=None):
         torch.tensor(float('-inf'), dtype=torch.float32),
     )
     return _categorical_logits(logits, rng)
+
+
+# ── Batch Player ─────────────────────────────────────────────────
+
+def rule_based_player_batch(bs, seed=0):
+    """Batch rule-based player: returns (B,) actions tensor.
+
+    Pre-computes the heavy shanten calculation for all envs in batch,
+    then does per-env lightweight decisions directly from BatchState
+    without the overhead of full unstack_state.
+    """
+    B = bs.B
+    device = bs.players.hand_with_red.device
+    cp = bs.current_player  # (B,)
+    b_idx = torch.arange(B, device=device)
+
+    # ═══ Batch: extract current-player hand data ═══
+    hand_with_red = bs.players.hand_with_red[b_idx, cp]  # (B, 37)
+    hands_34 = Hand.to_34_batch(hand_with_red)            # (B, 34)
+    n_meld = bs.players.meld_counts[b_idx, cp]            # (B,)
+
+    # ═══ Batch: shanten for all 34 discards × B envs ═══
+    detailed = Shanten.detailed_discard_batch(hands_34)  # (B, 34, 3)
+    normal_all = detailed[:, :, 0]   # (B, 34)
+    seven_all = detailed[:, :, 1]    # (B, 34)
+    orphan_all = detailed[:, :, 2]   # (B, 34)
+
+    actions = torch.zeros(B, dtype=torch.int32)
+
+    for i in range(B):
+        # ── Per-env lightweight decisions (no shanten recomputation) ──
+        mask = bs.legal_action_mask[i]                       # (87,)
+        riichi = bs.players.riichi[i]                        # (4,)
+        melds = bs.players.melds[i]                          # (4, MAX_MELDS)
+        seat_wind = bs.round_state.seat_wind[i]              # (4,)
+        target = int(bs.round_state.target[i].item())
+        last_draw = int(bs.round_state.last_draw[i].item())
+
+        h_34 = hands_34[i]           # (34,)
+        h_37 = hand_with_red[i]      # (37,)
+        n_m = int(n_meld[i].item())
+        cp_i = int(cp[i].item())
+
+        normal_s = normal_all[i]     # (34,)
+        seven_s = seven_all[i]       # (34,)
+        orphan_s = orphan_all[i]     # (34,)
+
+        # ── Choose best shanten type ──
+        best_n = int(normal_s.min().item())
+        best_7 = int(seven_s.min().item())
+        best_o = int(orphan_s.min().item())
+
+        if best_n < best_7 or best_7 <= 3:
+            best_shanten = best_n
+            shantens = normal_s
+        else:
+            best_shanten = best_7
+            shantens = seven_s
+
+        if best_shanten >= best_o + 2:
+            best_shanten = best_o
+            shantens = orphan_s
+
+        if n_m > 0:
+            best_shanten = best_n
+            shantens = normal_s
+
+        # ── Discard selection ──
+        best_mask = shantens == best_shanten
+        priority = best_mask.int() * PRIORITY_MASK * (h_34 > 0).int()
+        best_discard = int(torch.argmax(priority).item())
+
+        # Tenpai waiting
+        is_tenpai = best_shanten == 0
+        if is_tenpai:
+            can_rons = torch.full((34,), -1, dtype=torch.int32)
+            for t in range(34):
+                if h_34[t] == 0 or int(shantens[t].item()) != 0:
+                    continue
+                h_test = h_34.clone()
+                h_test[t] -= 1
+                count = 0
+                for tile_in in range(34):
+                    if Hand.can_ron(h_test, tile_in):
+                        count += 1
+                can_rons[t] = count
+            best_discard = int(torch.argmax(can_rons).item())
+
+        discard_action = _discard_action_from_tile_type(h_37, best_discard)
+        if discard_action == last_draw:
+            discard_action = Action.TSUMOGIRI
+
+        # ── Fallback: random legal if discard not legal ──
+        if not mask[discard_action]:
+            legal_logits = torch.where(mask, torch.tensor(0.0),
+                                       torch.tensor(float('-inf')))
+            discard_action = _categorical_logits(legal_logits)
+
+        action = discard_action
+
+        # ── Meld decisions ──
+        is_chi = bool(mask[Action.CHI_L:Action.CHI_R_RED + 1].any().item())
+        is_pon = bool(mask[Action.PON].item()) or bool(mask[Action.PON_RED].item())
+        is_open_kan = bool(mask[Action.OPEN_KAN].item())
+
+        if is_chi or is_pon or is_open_kan:
+            # Lightweight per-env meld decision
+            target_type = Tile.to_tile_type(target)
+            is_yaku = target_type in (27, 31, 32, 33) or \
+                      target_type == 27 + int(seat_wind[cp_i].item())
+
+            is_yaku_meld = False
+            n_melds_i = int(bs.players.meld_counts[i, cp_i].item())
+            for j in range(n_melds_i):
+                m = int(melds[cp_i, j].item())
+                if m == 0xFFFF:
+                    continue
+                mt = Meld.target(m)
+                if int(mt) in (27, 31, 32, 33) or \
+                   int(mt) == 27 + int(seat_wind[cp_i].item()):
+                    is_yaku_meld = True
+
+            has_pung = h_34[target_type] >= 3
+
+            if is_chi:
+                basic_prob = float((h_34.int() * (1 - OUTSIDE_MASK)).sum().item()) * BASIC_CHI_PROB
+                prob = YAKU_MELD_CHI_PROB if is_yaku_meld else basic_prob
+                prob = HAS_PUNG_CHI_PROB if has_pung else prob
+                if py_random.random() < float(prob):
+                    chi_s = Action.CHI_L
+                    chi_e = Action.CHI_R_RED + 1
+                    chi_logits = torch.full((Action.NUM_ACTION,), float('-inf'))
+                    for a in range(chi_s, chi_e):
+                        if mask[a]:
+                            chi_logits[a] = 0.0
+                    if chi_logits.max() > float('-inf'):
+                        action = _categorical_logits(chi_logits)
+
+            if is_pon:
+                basic_prob = float((h_34.int() * (1 - OUTSIDE_MASK)).sum().item()) * BASIC_PON_PROB
+                prob = YAKU_PON_PROB if is_yaku else basic_prob
+                prob = YAKU_MELD_PON_PROB if is_yaku_meld else prob
+                prob = HAS_PUNG_PON_PROB if has_pung else prob
+                if py_random.random() < float(prob):
+                    action = Action.PON_RED if mask[Action.PON_RED] else Action.PON
+
+            if is_open_kan:
+                if py_random.random() < OPEN_KAN_PROB:
+                    action = Action.OPEN_KAN
+
+        # ── Riichi & Win ──
+        if mask[Action.RIICHI]:
+            if py_random.random() < RIICHI_PROB:
+                action = Action.RIICHI
+        if mask[Action.TSUMO]:
+            action = Action.TSUMO
+        if mask[Action.RON]:
+            action = Action.RON
+
+        actions[i] = int(action)
+
+    return actions  # (B,)

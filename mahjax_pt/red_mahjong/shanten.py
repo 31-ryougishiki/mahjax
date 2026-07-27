@@ -146,6 +146,48 @@ class Shanten:
         return stacked.min(dim=1).values - 1  # (B,)
 
     @staticmethod
+    def discard_batch(hands_34):
+        """Vectorized: hands_34 (B, 34) → (B, 34) — shanten after each possible discard.
+
+        Replaces the per-env loop of 34× Shanten.number() with a single batch call.
+        Returns 6 for tiles the hand doesn't have.
+        """
+        B = hands_34.shape[0]
+        device = hands_34.device
+
+        # Build (B, 34, 34): for each env, for each discard option, the resulting hand
+        hands_expanded = hands_34.unsqueeze(1).expand(B, 34, 34).clone()  # (B, 34, 34)
+        d = torch.arange(34, device=device)
+        hands_expanded[:, d, d] -= 1  # subtract one at the discarded position
+
+        # Flatten → batch shanten
+        flat = hands_expanded.reshape(B * 34, 34)
+        results = Shanten.number_batch(flat).reshape(B, 34)  # (B, 34)
+
+        # Mask tiles the hand doesn't hold
+        has = hands_34 > 0
+        return torch.where(has, results, torch.full_like(results, 6))
+
+    @staticmethod
+    def detailed_discard_batch(hands_34):
+        """Vectorized: hands_34 (B, 34) → (B, 34, 3) — (normal, 7pair, orphan) after discard."""
+        B = hands_34.shape[0]
+        device = hands_34.device
+
+        hands_expanded = hands_34.unsqueeze(1).expand(B, 34, 34).clone()
+        d = torch.arange(34, device=device)
+        hands_expanded[:, d, d] -= 1
+
+        flat = hands_expanded.reshape(B * 34, 34)
+        normal = Shanten.normal_batch(flat)
+        seven = Shanten.seven_pairs_batch(flat)
+        orphan = Shanten.thirteen_orphan_batch(flat)
+
+        results = torch.stack([normal, seven, orphan], dim=1).reshape(B, 34, 3)
+        has = hands_34.unsqueeze(2).expand(B, 34, 3) > 0
+        return torch.where(has, results, torch.full_like(results, 6))
+
+    @staticmethod
     def detailed_discard(hand):
         """For each of the 34 tile types, return (normal, 7pairs, 13orphan) after discarding one."""
         results = torch.full((34, 3), 6, dtype=torch.int32)
