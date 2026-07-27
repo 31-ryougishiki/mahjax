@@ -560,15 +560,21 @@ class HandlersMixin:
 
             # Append meld
             c_meld_counts = bs.players.meld_counts[c_idx, c_cps].long()
-            # Defensive: clamp to avoid index out of bounds when meld_count
-            # somehow reaches 4 (MAX_MELDS_PER_PLAYER).  The legal-action mask
-            # should prevent this, but batch rules can have edge cases.
-            c_meld_safe = c_meld_counts.clamp(0, 3)
-            bs.players.melds[c_idx, c_cps, c_meld_safe] = c_melds
-            bs.players.meld_counts[c_idx, c_cps] = torch.where(
-                c_meld_counts < 4,
-                c_meld_counts + 1,
-                c_meld_counts)
+            # Debug: log when meld_count is unexpectedly >= 4
+            if (c_meld_counts >= 4).any():
+                bad = torch.where(c_meld_counts >= 4)[0]
+                import logging
+                _log = logging.getLogger("env")
+                _log.error(
+                    f"_selfkan_batch: {len(bad)}/{C} envs have meld_count>=4 "
+                    f"before append! counts={c_meld_counts[bad].tolist()}, "
+                    f"tile_types={c_tt[bad].tolist()}, "
+                    f"cps={c_cps[bad].tolist()}, "
+                    f"env_indices={c_idx[bad].tolist()}, "
+                    f"deck_ix={bs.round_state.next_deck_ix[c_idx[bad]].tolist()}, "
+                    f"actions={c_actions[bad].tolist()}")
+            bs.players.melds[c_idx, c_cps, c_meld_counts] = c_melds
+            bs.players.meld_counts[c_idx, c_cps] += 1
 
             # Hand mutation
             hands_C = bs.players.hand_with_red[c_idx, c_cps]
