@@ -175,7 +175,8 @@ class InternalsMixin:
         multi_ron = can_ron_v.sum(dim=1) > 1  # (M,)
         if multi_ron.any():
             distances = (torch.arange(P, device=device).unsqueeze(0) - discarded_players.unsqueeze(1)) % 4  # (M, 4)
-            distances = torch.where(can_ron_v, distances, torch.full_like(distances, float('inf')))
+            distances = torch.where(can_ron_v, distances,
+                                    torch.full_like(distances, 9999))
             next_p = torch.where(multi_ron, torch.argmin(distances, dim=1), next_p)
 
         # ── 8. Apply results ──
