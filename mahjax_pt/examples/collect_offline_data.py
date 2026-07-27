@@ -136,32 +136,38 @@ def collect_data(
                 log_time = time.time()
                 acc_observe = acc_player = acc_step = acc_reinit = 0.0
 
-        # ── GAE (vectorized across batch) ──
+        # ── GAE (move to CPU first for numpy conversion) ──
         T, B = num_steps, num_envs
         returns = np.zeros((T, B), dtype=np.float32)
+        done_cpu = [d.cpu() for d in done_seq]
+        rew_cpu = [r.cpu() for r in rew_seq]
+        cp_cpu = [c.cpu() for c in cp_seq]
         for b in range(B):
             running_ret = np.zeros(4, dtype=np.float32)
             for t in reversed(range(T)):
-                if done_seq[t][b]:
+                if done_cpu[t][b]:
                     running_ret = np.zeros(4, dtype=np.float32)
-                r_t = rew_seq[t][b].numpy()
+                r_t = rew_cpu[t][b].numpy()
                 running_ret = r_t + gamma * running_ret
-                p = int(cp_seq[t][b].item())
+                p = int(cp_cpu[t][b].item())
                 returns[t, b] = running_ret[p]
 
         returns = returns / max_reward
 
         # ── Flatten & store (skip samples where action is not in mask) ──
         skipped = 0
+        mask_cpu = [m.cpu() for m in mask_seq]
+        act_cpu = [a.cpu() for a in act_seq]
+        obs_cpu = [{k: v.cpu() for k, v in o.items()} for o in obs_seq]
         for b in range(B):
             for t in range(T):
-                mask = mask_seq[t][b]
-                action = act_seq[t][b]
+                mask = mask_cpu[t][b]
+                action = act_cpu[t][b]
                 if not mask[action]:
                     skipped += 1
                     continue
                 # Extract single-env observation from batched dict
-                obs_single = {k: v[b] for k, v in obs_seq[t].items()}
+                obs_single = {k: v[b] for k, v in obs_cpu[t].items()}
                 data_obs.append(obs_single)
                 data_act.append(int(action.item()))
                 data_mask.append(mask)

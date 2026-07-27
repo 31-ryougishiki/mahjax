@@ -344,41 +344,49 @@ def random_player(state, rng=None):
 def rule_based_player_batch(bs, seed=0):
     """Batch rule-based player: returns (B,) actions tensor.
 
-    Pre-computes the heavy shanten calculation for all envs in batch,
-    then does per-env lightweight decisions directly from BatchState
-    without the overhead of full unstack_state.
+    Batched shanten computation runs on the BatchState device (NPU/GPU),
+    then all data moves to CPU for the per-env decision loop to avoid
+    paying device→host sync overhead on every .item() call.
     """
     B = bs.B
     device = bs.players.hand_with_red.device
     cp = bs.current_player  # (B,)
     b_idx = torch.arange(B, device=device)
 
-    # Move module-level constants to target device
-    _pm = PRIORITY_MASK.to(device)
-    _om = OUTSIDE_MASK.to(device)
-
-    # ═══ Batch: extract current-player hand data ═══
+    # ═══ Phase 1: batched shanten on accelerator ═══
     hand_with_red = bs.players.hand_with_red[b_idx, cp]  # (B, 37)
     hands_34 = Hand.to_34_batch(hand_with_red)            # (B, 34)
     n_meld = bs.players.meld_counts[b_idx, cp]            # (B,)
 
-    # ═══ Batch: shanten for all 34 discards × B envs ═══
     detailed = Shanten.detailed_discard_batch(hands_34)  # (B, 34, 3)
     normal_all = detailed[:, :, 0]   # (B, 34)
     seven_all = detailed[:, :, 1]    # (B, 34)
     orphan_all = detailed[:, :, 2]   # (B, 34)
 
-    actions = torch.zeros(B, dtype=torch.int32, device=device)
+    # ═══ Phase 2: move everything to CPU (single sync barrier) ═══
+    _pm = PRIORITY_MASK  # already on CPU
+    _om = OUTSIDE_MASK   # already on CPU
+
+    hand_with_red = hand_with_red.cpu()
+    hands_34 = hands_34.cpu()
+    n_meld = n_meld.cpu()
+    normal_all = normal_all.cpu()
+    seven_all = seven_all.cpu()
+    orphan_all = orphan_all.cpu()
+    cp = cp.cpu()
+    mask_all = bs.legal_action_mask.cpu()          # (B, 87)
+    riichi_all = bs.players.riichi.cpu()           # (B, 4)
+    melds_all = bs.players.melds.cpu()             # (B, 4, MAX_MELDS)
+    seat_wind_all = bs.round_state.seat_wind.cpu() # (B, 4)
+    target_all = bs.round_state.target.cpu()       # (B,)
+    last_draw_all = bs.round_state.last_draw.cpu() # (B,)
+    meld_counts_all = bs.players.meld_counts.cpu() # (B, 4)
+
+    # ═══ Phase 3: per-env decisions on CPU (fast, no device syncs) ═══
+    actions = torch.zeros(B, dtype=torch.int32)  # CPU
 
     for i in range(B):
-        # ── Per-env lightweight decisions (no shanten recomputation) ──
-        mask = bs.legal_action_mask[i]                       # (87,)
-        riichi = bs.players.riichi[i]                        # (4,)
-        melds = bs.players.melds[i]                          # (4, MAX_MELDS)
-        seat_wind = bs.round_state.seat_wind[i]              # (4,)
-        target = int(bs.round_state.target[i].item())
-        last_draw = int(bs.round_state.last_draw[i].item())
-
+        mask = mask_all[i]           # (87,)
         h_34 = hands_34[i]           # (34,)
         h_37 = hand_with_red[i]      # (37,)
         n_m = int(n_meld[i].item())
@@ -387,6 +395,11 @@ def rule_based_player_batch(bs, seed=0):
         normal_s = normal_all[i]     # (34,)
         seven_s = seven_all[i]       # (34,)
         orphan_s = orphan_all[i]     # (34,)
+
+        target = int(target_all[i].item())
+        last_draw = int(last_draw_all[i].item())
+        melds = melds_all[i]         # (4, MAX_MELDS)
+        seat_wind = seat_wind_all[i] # (4,)
 
         # ── Choose best shanten type ──
         best_n = int(normal_s.min().item())
@@ -453,7 +466,7 @@ def rule_based_player_batch(bs, seed=0):
                       target_type == 27 + int(seat_wind[cp_i].item())
 
             is_yaku_meld = False
-            n_melds_i = int(bs.players.meld_counts[i, cp_i].item())
+            n_melds_i = int(meld_counts_all[i, cp_i].item())
             for j in range(n_melds_i):
                 m = int(melds[cp_i, j].item())
                 if m == 0xFFFF:
@@ -502,4 +515,4 @@ def rule_based_player_batch(bs, seed=0):
 
         actions[i] = int(action)
 
-    return actions  # (B,)
+    return actions.to(device)  # (B,) on original device
