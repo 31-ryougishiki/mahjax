@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Offline data collector using rule-based players (PyTorch port).
+"""Offline data collector using rule-based players (PyTorch port, batch backend).
+
+Uses the parallel (batch) backend for vectorized env stepping.
+Player actions are still computed per-env via unstack_state, but all env
+transitions are batched into a single step_batch call.
 
 Usage:
     python mahjax_pt/examples/collect_offline_data.py \
-        --num_samples 2000 --num_envs 4 --num_steps 32 --seed 0
+        --num_samples 200000 --num_envs 1024 --num_steps 32 --seed 0
 """
 
 import os
@@ -16,7 +20,7 @@ import numpy as np
 import torch
 
 from mahjax_pt.red_mahjong.env import make as make_env
-from mahjax_pt.red_mahjong.auto_reset_wrapper import auto_reset
+from mahjax_pt.red_mahjong.batch_state import unstack_state
 from mahjax_pt.red_mahjong.players import rule_based_player
 from mahjax_pt.examples.common import default_dataset_path, attach_dataset_metadata
 
@@ -33,7 +37,7 @@ logger = logging.getLogger("collect")
 def collect_data(
     env_name="red_mahjong",
     num_samples=200_000,
-    num_envs=4,
+    num_envs=1024,
     num_steps=32,
     seed=0,
     gamma=0.99,
@@ -43,23 +47,19 @@ def collect_data(
     if dataset_path is None:
         dataset_path = default_dataset_path(env_name)
 
-    # ── 1. Init env ──
-    logger.info(f"Creating env: {env_name} (round_mode=single)")
+    # ── 1. Init parallel env ──
+    logger.info(f"Creating env: {env_name} (round_mode=single, backend=parallel)")
     t0 = time.time()
-    env = make_env(env_name, round_mode="single", observe_type="dict")
-    step_env = auto_reset(env.step, env.init)
+    env = make_env(env_name, round_mode="single", observe_type="dict", backend="parallel")
     logger.info(f"Env created in {time.time() - t0:.1f}s | "
                 f"num_players={env.num_players} num_actions={env.num_actions}")
 
-    # ── 2. Init states ──
-    logger.info(f"Initializing {num_envs} environment(s) with seed={seed}")
-    states = []
-    for i in range(num_envs):
-        g = torch.Generator().manual_seed(seed + i)
-        s = env.init(g)
-        states.append(s)
-        logger.debug(f"  Env {i}: init OK, dealer={s.current_player}, "
-                     f"legal_actions={s.legal_action_mask.sum().item()}")
+    # ── 2. Init all envs at once ──
+    logger.info(f"Initializing {num_envs} environments with seed={seed} (batch)")
+    keys = [seed + i for i in range(num_envs)]
+    t0 = time.time()
+    states = env.init_batch(keys=keys)
+    logger.info(f"Batch init done in {time.time() - t0:.1f}s")
 
     # ── 3. Collect ──
     chunk_size = num_envs * num_steps
@@ -67,11 +67,7 @@ def collect_data(
     total_steps = 0
     start_time = time.time()
 
-    # Track per-env stats for debugging
-    env_step_count = [0] * num_envs        # steps in current game
-    env_game_count = [0] * num_envs         # how many games played
-
-    logger.info(f"Collection: {num_chunks} chunks × {chunk_size} steps/chunk "
+    logger.info(f"Collection: {num_chunks} chunks × {num_envs} envs × {num_steps} steps "
                 f"= {num_chunks * chunk_size} total | target: {num_samples}")
 
     data_obs = []
@@ -81,112 +77,72 @@ def collect_data(
 
     for chunk_idx in range(num_chunks):
         chunk_start = time.time()
-        obs_seq = []
-        act_seq = []
-        mask_seq = []
-        rew_seq = []
-        done_seq = []
-        cp_seq = []
+        obs_seq = []   # list of batched obs dicts: dict of (B, ...) tensors
+        act_seq = []   # list of (B,) int tensors
+        mask_seq = []  # list of (B, num_actions) bool tensors
+        rew_seq = []   # list of (B, 4) float tensors
+        done_seq = []  # list of (B,) bool tensors
+        cp_seq = []    # list of (B,) int tensors
 
         for step in range(num_steps):
             step_start = time.time()
-            o_list = []
-            a_list = []
-            m_list = []
-            r_list = []
-            d_list = []
-            c_list = []
 
-            for i in range(num_envs):
-                # ══ Per-env step ══
-                env_start = time.time()
-                s = states[i]
-                cp = s.current_player
+            # ── Observe (batched) ──
+            obs = env.observe_batch(states)  # dict of (B, ...) tensors
 
-                # Check for abnormal state
-                if s.terminated and not s.truncated:
-                    # Track game end, but auto_reset should handle this
-                    env_game_count[i] += 1
-                    logger.debug(f"  Env {i}: game #{env_game_count[i]} ended "
-                                f"at step {env_step_count[i]}, scores={s.round_state.score.tolist()}")
-                    env_step_count[i] = 0
+            # ── Player actions (per-env, using unstack_state) ──
+            B = states.B
+            actions = []
+            for i in range(B):
+                s = unstack_state(states, i)
+                g = torch.Generator().manual_seed(
+                    seed + chunk_idx * 10000 + step * num_envs + i)
+                action = rule_based_player(s, g)
+                actions.append(action)
+            actions_t = torch.tensor(actions, dtype=torch.int32)
 
-                # Observe
-                try:
-                    obs = env.observe(s)
-                except Exception as e:
-                    logger.error(f"  Env {i}: observe failed: {e}", exc_info=True)
-                    raise
+            # ── Step (batched) ──
+            states = env.step_batch(states, actions_t)
 
-                mask = s.legal_action_mask
-                n_legal = mask.sum().item()
+            # ── Collect transition data ──
+            done = states.terminated | states.truncated
+            reward = states.rewards.clone()
+            mask = states.legal_action_mask.clone()
 
-                # Player action
-                g = torch.Generator().manual_seed(seed + chunk_idx * 10000 + step * num_envs + i)
-                try:
-                    action = rule_based_player(s, g)
-                except Exception as e:
-                    logger.error(f"  Env {i} step {step}: player failed "
-                                f"(legal_actions={n_legal}): {e}", exc_info=True)
-                    raise
+            obs_seq.append(obs)
+            act_seq.append(actions_t)
+            mask_seq.append(mask)
+            rew_seq.append(reward)
+            done_seq.append(done)
+            cp_seq.append(states.current_player.clone())
 
-                # Env step
-                try:
-                    next_s = step_env(s, action, g)
-                except Exception as e:
-                    logger.error(f"  Env {i} step {step}: env.step failed "
-                                f"(action={action}): {e}", exc_info=True)
-                    raise
-
-                done = next_s.terminated or next_s.truncated
-                reward = next_s.rewards.clone()
-
-                env_step_count[i] += 1
-                env_elapsed = time.time() - env_start
-
-                # Warn if single step takes too long
-                if env_elapsed > 2.0:
-                    logger.warning(f"  Env {i} step {step}: SLOW ({env_elapsed:.1f}s) "
-                                   f"action={action}, game_step={env_step_count[i]}, "
-                                   f"done={done}, legal={n_legal}")
-
-                states[i] = next_s
-                o_list.append(obs)
-                a_list.append(action)
-                m_list.append(mask)
-                r_list.append(reward)
-                d_list.append(done)
-                c_list.append(cp)
-
-            obs_seq.append(o_list)
-            act_seq.append(a_list)
-            mask_seq.append(m_list)
-            rew_seq.append(r_list)
-            done_seq.append(d_list)
-            cp_seq.append(c_list)
+            # ── Reinit terminated envs ──
+            term_count = done.sum().item()
+            if term_count > 0:
+                states = env.reinit_terminated_batch(states)
 
             step_elapsed = time.time() - step_start
             if step > 0 and step % 8 == 0:
                 logger.info(f"  Chunk {chunk_idx+1}/{num_chunks} step {step}/{num_steps} "
-                           f"({step_elapsed:.2f}s for 8 steps, ~{step_elapsed/8*1000:.0f}ms/step)")
+                           f"({step_elapsed:.2f}s for 8 steps, ~{step_elapsed/8*1000:.0f}ms/step "
+                           f"| {term_count} resets)")
 
-        # ── GAE for this chunk ──
-        logger.debug(f"  Computing GAE for chunk {chunk_idx+1}...")
-        T, B, P = num_steps, num_envs, 4
+        # ── GAE (vectorized across batch) ──
+        T, B = num_steps, num_envs
         returns = np.zeros((T, B), dtype=np.float32)
         for b in range(B):
-            running_ret = np.zeros(P, dtype=np.float32)
+            running_ret = np.zeros(4, dtype=np.float32)
             for t in reversed(range(T)):
                 if done_seq[t][b]:
-                    running_ret = np.zeros(P, dtype=np.float32)
+                    running_ret = np.zeros(4, dtype=np.float32)
                 r_t = rew_seq[t][b].numpy()
                 running_ret = r_t + gamma * running_ret
-                p = cp_seq[t][b]
+                p = int(cp_seq[t][b].item())
                 returns[t, b] = running_ret[p]
 
         returns = returns / max_reward
 
-        # Flatten & store (skip samples where action is not in mask)
+        # ── Flatten & store (skip samples where action is not in mask) ──
         skipped = 0
         for b in range(B):
             for t in range(T):
@@ -195,8 +151,10 @@ def collect_data(
                 if not mask[action]:
                     skipped += 1
                     continue
-                data_obs.append(obs_seq[t][b])
-                data_act.append(action)
+                # Extract single-env observation from batched dict
+                obs_single = {k: v[b] for k, v in obs_seq[t].items()}
+                data_obs.append(obs_single)
+                data_act.append(int(action.item()))
                 data_mask.append(mask)
                 data_ret.append(returns[t, b])
         if skipped > 0:
@@ -206,12 +164,12 @@ def collect_data(
 
         chunk_elapsed = time.time() - chunk_start
         progress_pct = min(100.0, 100.0 * total_steps / num_samples)
+        sps = total_steps / (time.time() - start_time) if total_steps > 0 else 0
         logger.info(f"  Chunk {chunk_idx+1}/{num_chunks} done in {chunk_elapsed:.1f}s | "
-                    f"samples: {total_steps}/{num_samples} ({progress_pct:.0f}%) | "
-                    f"games/env: {env_game_count} | "
-                    f"current_env_steps: {env_step_count}")
+                    f"samples: {len(data_obs)}/{num_samples} ({progress_pct:.0f}%) | "
+                    f"{sps:.0f} samples/s")
 
-        if total_steps >= num_samples:
+        if len(data_obs) >= num_samples:
             break
 
     # ── 4. Save ──
@@ -248,7 +206,7 @@ def collect_data(
         pickle.dump(dataset, f)
 
     elapsed = time.time() - start_time
-    logger.info(f"✓ Collected {N} samples in {elapsed:.1f}s ({N/elapsed:.0f} samples/s) → {dataset_path}")
+    logger.info(f"Done: {N} samples in {elapsed:.1f}s ({N/elapsed:.0f} samples/s) → {dataset_path}")
     return dataset_path
 
 
@@ -256,8 +214,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--env_name", default="red_mahjong")
-    parser.add_argument("--num_samples", type=int, default=2000)
-    parser.add_argument("--num_envs", type=int, default=4)
+    parser.add_argument("--num_samples", type=int, default=200_000)
+    parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--num_steps", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dataset_path", default=None)
