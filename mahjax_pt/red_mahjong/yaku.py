@@ -460,7 +460,7 @@ class Yaku:
         all_chow = all_chow | (chow * shift)
         all_pung = all_pung | (pung * shift)
 
-        chow_range = chow | (chow << 1) | (chow << 2)
+        chow_range = chow | (chow * 2) | (chow * 4)  # * replaces << to avoid NPU fallback
         loss = is_ron.unsqueeze(1) & in_range & (((chow_range >> pos.unsqueeze(1)) & 1) == 0) & (((pung >> pos.unsqueeze(1)) & 1) == 1)
         n_concealed_pung = n_concealed_pung + n_pung - loss.to(torch.int32)
 
@@ -471,7 +471,7 @@ class Yaku:
 
         strong = (
             in_range
-            & ((1 << head) | ((chow & 1) << 2) | (chow & 0b1000000) | (chow << 1))
+            & ((2.0 ** head.float()).to(torch.int32) | ((chow & 1) * 4) | (chow & 0b1000000) | (chow * 2))
             >> pos.unsqueeze(1) & 1
         )
         outside_loss = loss & ((outside_pung >> pos.unsqueeze(1)) & 1)

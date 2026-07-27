@@ -99,9 +99,9 @@ def collect_data(
                 states, seed=seed + chunk_idx * 10000 + step * num_envs)
             acc_player += time.time() - t0
 
-            # ── Step (batched) ──
+            # ── Step (batched, with per-op profiling) ──
             t0 = time.time()
-            states = env.step_batch(states, actions_t)
+            states = env.step_batch(states, actions_t, profile=True)
             acc_step += time.time() - t0
 
             # ── Collect transition data ──
@@ -133,6 +133,14 @@ def collect_data(
                 logger.info(
                     f"    observe={acc_observe:.1f}s player={acc_player:.1f}s "
                     f"step={acc_step:.1f}s reinit={acc_reinit:.1f}s")
+                # Per-op step breakdown
+                perf = getattr(env._impl, '_perf', None)
+                if perf:
+                    total_t = sum(v['time'] for v in perf.values())
+                    items = sorted(perf.items(), key=lambda x: -x[1]['time'])
+                    parts = [f"{k}={v['time']:.1f}s({v['active_calls']}c/{v['total_envs']}e)" for k, v in items[:6]]
+                    logger.info(f"    step_ops(total={total_t:.1f}s): " + " | ".join(parts))
+                    env._impl._perf = {}
                 log_time = time.time()
                 acc_observe = acc_player = acc_step = acc_reinit = 0.0
 
