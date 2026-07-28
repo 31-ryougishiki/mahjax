@@ -1,0 +1,18 @@
+{
+  "batch_state_memory/B16_total_mb": 0.05645751953125,
+  "batch_state_memory/B256_total_mb": 0.9033203125,
+  "batch_state_memory/B64_total_mb": 0.225830078125,
+  "env_init_batch/B16": 1010.7628400204703,
+  "env_init_batch/B256": 7819.797259988263,
+  "env_init_batch/B64": 1997.8930399985984,
+  "env_parallel_throughput/B1": 53.593079978600144,
+  "env_parallel_throughput/B16": 82.20226666890085,
+  "env_parallel_throughput/B4": 89.23857335466892,
+  "env_parallel_throughput/B64": 135.22350666268417,
+  "env_serial_throughput": 8800.452100019902,
+  "env_step_batch/B16": 49.52663000440225,
+  "env_step_batch/B256": 80.12956000166014,
+  "env_step_batch/B64": 52.56225499906577,
+  "ppo_buffer_T256_B128_total_mb": 33.75,
+  "ppo_buffer_per_step_mb": 0.1318359375
+}

@@ -85,6 +85,16 @@ ignore = ["E501", "E741"]
 [tool.ruff.lint.mccabe]
 max-complexity = 18
 
+[tool.pytest.ini_options]
+testpaths = ["mahjax_pt/tests"]
+pythonpath = ["."]
+markers = [
+    "slow: slow tests (deselect with '-m \"not slow\"')",
+    "precision: precision tests using golden data",
+    "performance: performance benchmarks",
+]
+addopts = "-v --tb=short"
+
 [tool.mypy]
 python_version = "3.9"
 ignore_missing_imports = true
